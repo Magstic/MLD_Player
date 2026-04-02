@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project name="mld-player" default="jar" basedir=".">
+    <description>Ant build for the clean-room Java MLD player.</description>
+
+    <property name="src.dir" value="src"/>
+    <property name="build.dir" value="build"/>
+    <property name="classes.dir" value="${build.dir}/classes"/>
+    <property name="dist.dir" value="dist"/>
+    <property name="jar.name" value="mld-player.jar"/>
+    <property name="jar.main.class" value="main.PlayerLauncher"/>
+    <property name="javac.source" value="1.8"/>
+    <property name="javac.target" value="1.8"/>
+
+    <target name="clean" description="Delete generated build output.">
+        <delete dir="${build.dir}"/>
+        <delete dir="${dist.dir}"/>
+    </target>
+
+    <target name="init" description="Create build directories.">
+        <mkdir dir="${classes.dir}"/>
+        <mkdir dir="${dist.dir}"/>
+    </target>
+
+    <target name="compile" depends="init" description="Compile Java sources.">
+        <delete dir="${classes.dir}"/>
+        <mkdir dir="${classes.dir}"/>
+        <javac
+            srcdir="${src.dir}"
+            destdir="${classes.dir}"
+            encoding="UTF-8"
+            source="${javac.source}"
+            target="${javac.target}"
+            includeantruntime="false"
+            debug="true"/>
+    </target>
+
+    <target name="jar" depends="compile" description="Build the runnable jar.">
+        <jar destfile="${dist.dir}/${jar.name}" basedir="${classes.dir}">
+            <manifest>
+                <attribute name="Main-Class" value="${jar.main.class}"/>
+            </manifest>
+        </jar>
+    </target>
+</project>
