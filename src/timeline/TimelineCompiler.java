@@ -122,7 +122,7 @@ public final class TimelineCompiler {
             }
         }
 
-        totalMidiTicks = maxLong(totalMidiTicks, flushExpiredNotes(Integer.MAX_VALUE, activeNotes, notes));
+        totalMidiTicks = maxLong(totalMidiTicks, flushExpiredNotes(2147483647, activeNotes, notes));
         for (i = 0; i < decodedTracks.size(); i++) {
             TrackDecodeResult track = (TrackDecodeResult) decodedTracks.elementAt(i);
             totalMidiTicks = maxLong(totalMidiTicks, mapper.rawToMidiTick(track.totalRawTicks));
@@ -230,8 +230,8 @@ public final class TimelineCompiler {
     }
 
     private PlaybackTimeline.LoopInfo determineLoopInfo(Vector decodedTracks, TempoMapper mapper, Vector warnings) {
-        Integer[] loopStarts = new Integer[4];
-        Integer[] loopEnds = new Integer[4];
+        int[] loopStarts = new int[] { -1, -1, -1, -1 };
+        int[] loopEnds = new int[] { -1, -1, -1, -1 };
         int[] repeatCounts = new int[] { 0, 0, 0, 0 };
         Vector loopWarnings = new Vector();
         int i;
@@ -253,13 +253,13 @@ public final class TimelineCompiler {
                     int slot = (systemEvent.value >> 6) & 0x03;
                     int operation = systemEvent.value & 0x03;
                     if (operation == 0x00) {
-                        if (loopStarts[slot] == null || systemEvent.rawTick < loopStarts[slot].intValue()) {
-                            loopStarts[slot] = new Integer(systemEvent.rawTick);
+                        if (loopStarts[slot] < 0 || systemEvent.rawTick < loopStarts[slot]) {
+                            loopStarts[slot] = systemEvent.rawTick;
                         }
                     } else if (operation == 0x01) {
-                        if (loopEnds[slot] == null || systemEvent.rawTick < loopEnds[slot].intValue()) {
+                        if (loopEnds[slot] < 0 || systemEvent.rawTick < loopEnds[slot]) {
                             int repeat = (systemEvent.value >> 2) & 0x0F;
-                            loopEnds[slot] = new Integer(systemEvent.rawTick);
+                            loopEnds[slot] = systemEvent.rawTick;
                             repeatCounts[slot] = repeat == 0 ? -1 : repeat;
                         }
                     }
@@ -268,15 +268,15 @@ public final class TimelineCompiler {
         }
 
         for (i = 0; i < 4; i++) {
-            if (loopStarts[i] != null
-                    && loopEnds[i] != null
-                    && loopEnds[i].intValue() > loopStarts[i].intValue()) {
+            if (loopStarts[i] >= 0
+                    && loopEnds[i] >= 0
+                    && loopEnds[i] > loopStarts[i]) {
                 if (chosenSlot >= 0) {
                     loopWarnings.addElement("Multiple loop slots detected; using the lowest numbered complete slot.");
                     break;
                 }
                 chosenSlot = i;
-            } else if ((loopStarts[i] == null) != (loopEnds[i] == null)) {
+            } else if ((loopStarts[i] >= 0) != (loopEnds[i] >= 0)) {
                 loopWarnings.addElement("Loop slot " + i + " is incomplete and will be ignored.");
             }
         }
@@ -287,8 +287,8 @@ public final class TimelineCompiler {
         }
 
         {
-            int loopStart = loopStarts[chosenSlot].intValue();
-            int loopEnd = loopEnds[chosenSlot].intValue();
+            int loopStart = loopStarts[chosenSlot];
+            int loopEnd = loopEnds[chosenSlot];
             if (loopEnd <= loopStart) {
                 loopWarnings.addElement("Loop end does not fall after loop start; looping disabled.");
                 addAll(warnings, loopWarnings);
@@ -326,7 +326,7 @@ public final class TimelineCompiler {
         int velocity;
         int rawEndTick;
         long midiEndTick;
-        Integer activeKey;
+        IntKey activeKey;
         ActiveNote previous;
 
         if (logicalChannel < 0 || logicalChannel >= MAX_LOGICAL_CHANNELS) {
@@ -369,7 +369,7 @@ public final class TimelineCompiler {
         rawEndTick = noteEvent.rawTick + noteEvent.gate;
         midiEndTick = normalizeMidiEnd(midiStartTick, mapper.rawToMidiTick(rawEndTick));
 
-        activeKey = new Integer((logicalChannel << 7) | midiNote);
+        activeKey = new IntKey((logicalChannel << 7) | midiNote);
         previous = (ActiveNote) activeNotes.remove(activeKey);
         if (previous != null) {
             activeNotes.put(activeKey, previous.refreshGate(rawEndTick, midiEndTick));
@@ -964,7 +964,7 @@ public final class TimelineCompiler {
         long maxTick = -1L;
 
         while (keys.hasMoreElements()) {
-            Integer key = (Integer) keys.nextElement();
+            Object key = keys.nextElement();
             ActiveNote active = (ActiveNote) activeNotes.get(key);
             if (active.rawEndTick > currentRawTick) {
                 continue;
@@ -1038,7 +1038,7 @@ public final class TimelineCompiler {
         for (i = 0; i < ordered.size(); i++) {
             PlaybackTimeline.MappedControlEvent control = (PlaybackTimeline.MappedControlEvent) ordered.elementAt(i);
             if (isVolumeOrPanControl(control)) {
-                Integer key = new Integer((control.midiChannel << 8) | (control.data1 & 0x7F));
+                IntKey key = new IntKey((control.midiChannel << 8) | (control.data1 & 0x7F));
                 Vector stream = (Vector) groupedStreams.get(key);
                 if (stream == null) {
                     stream = new Vector();
@@ -1053,9 +1053,10 @@ public final class TimelineCompiler {
 
         rewritten = copyVector(passthrough);
         for (i = 0; i < groupedKeys.size(); i++) {
-            Integer key = (Integer) groupedKeys.elementAt(i);
+            IntKey key = (IntKey) groupedKeys.elementAt(i);
             Vector stream = (Vector) groupedStreams.get(key);
-            Integer previousValue = null;
+            boolean previousValueSet = false;
+            int previousValue = 0;
             int j;
             for (j = 0; j < stream.size(); j++) {
                 PlaybackTimeline.MappedControlEvent control = (PlaybackTimeline.MappedControlEvent) stream.elementAt(j);
@@ -1065,21 +1066,22 @@ public final class TimelineCompiler {
                         computeNativeSmoothingWindowTicks(control.midiTick, tempoPoints),
                         maxLong(0L, boundaryTick - control.midiTick));
 
-                if (previousValue != null
+                if (previousValueSet
                         && isOrdinaryLiveMixProxyCandidate(control)
                         && chaseWindowTicks > 0L
-                        && hasStrictlyActiveNote((Vector) notesByChannel.get(new Integer(control.midiChannel)), control.midiTick)) {
+                        && hasStrictlyActiveNote((Vector) notesByChannel.get(new IntKey(control.midiChannel)), control.midiTick)) {
                     nextOrder = appendMixChasedControls(
                             rewritten,
                             control,
-                            previousValue.intValue(),
+                            previousValue,
                             targetValue,
                             chaseWindowTicks,
                             nextOrder);
                 } else {
                     rewritten.addElement(copyMappedControl(control, control.midiTick, targetValue, nextOrder++, control.sourceName));
                 }
-                previousValue = new Integer(targetValue);
+                previousValue = targetValue;
+                previousValueSet = true;
             }
         }
 
@@ -1092,7 +1094,7 @@ public final class TimelineCompiler {
         int i;
         for (i = 0; i < notes.size(); i++) {
             PlaybackTimeline.CompiledNote note = (PlaybackTimeline.CompiledNote) notes.elementAt(i);
-            Integer key = new Integer(note.midiChannel);
+            IntKey key = new IntKey(note.midiChannel);
             Vector channelNotes = (Vector) grouped.get(key);
             if (channelNotes == null) {
                 channelNotes = new Vector();
@@ -1573,6 +1575,30 @@ public final class TimelineCompiler {
         }
     }
 
+    private static final class IntKey {
+        final int value;
+
+        IntKey(int value) {
+            this.value = value;
+        }
+
+        public int hashCode() {
+            return value;
+        }
+
+        public boolean equals(Object other) {
+            return other instanceof IntKey && ((IntKey) other).value == value;
+        }
+    }
+
+    private static final class IntValue {
+        final int value;
+
+        IntValue(int value) {
+            this.value = value;
+        }
+    }
+
     private static final class ActiveNote {
         final int sourceTrack;
         final int sourceVoice;
@@ -1662,13 +1688,13 @@ public final class TimelineCompiler {
         }
 
         void emitPitchBend(int sourceTrack, int sourceCommand, String sourceName, int midiChannel, long midiTick, int bendValue) {
-            Integer key = new Integer(midiChannel);
+            IntKey key = new IntKey(midiChannel);
             int clamped = clamp(0, 16383, bendValue);
-            Integer previous = (Integer) lastPitchBendValues.get(key);
-            if (previous != null && previous.intValue() == clamped) {
+            IntValue previous = (IntValue) lastPitchBendValues.get(key);
+            if (previous != null && previous.value == clamped) {
                 return;
             }
-            lastPitchBendValues.put(key, new Integer(clamped));
+            lastPitchBendValues.put(key, new IntValue(clamped));
             emit(sourceTrack, sourceCommand, sourceName, midiChannel, midiTick, PITCH_BEND, clamped & 0x7F, (clamped >> 7) & 0x7F);
         }
 
@@ -1691,12 +1717,12 @@ public final class TimelineCompiler {
                 long midiTick,
                 int controller,
                 int value) {
-            Integer key = new Integer((midiChannel << 8) | (controller & 0x7F));
-            Integer previous = (Integer) lastControlValues.get(key);
-            if (previous != null && previous.intValue() == value) {
+            IntKey key = new IntKey((midiChannel << 8) | (controller & 0x7F));
+            IntValue previous = (IntValue) lastControlValues.get(key);
+            if (previous != null && previous.value == value) {
                 return;
             }
-            lastControlValues.put(key, new Integer(value));
+            lastControlValues.put(key, new IntValue(value));
             emit(sourceTrack, sourceCommand, sourceName, midiChannel, midiTick, CONTROL_CHANGE, controller, value);
         }
 

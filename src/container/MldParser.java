@@ -5,8 +5,17 @@ import java.io.UnsupportedEncodingException;
 import java.util.Vector;
 
 import util.ByteArrayUtil;
+import util.Cp932Decoder;
 
 public final class MldParser {
+    private static final String[] JAPANESE_TEXT_ENCODINGS = new String[] {
+            "MS932",
+            "Windows-31J",
+            "Shift_JIS",
+            "SJIS",
+            "cp932"
+    };
+
     public MldFile parse(byte[] data) throws IOException {
         int offset;
         int noteExtraBytes = 0;
@@ -165,17 +174,31 @@ public final class MldParser {
                 || "supt".equals(chunkId)
                 || "auth".equals(chunkId)
                 || "prot".equals(chunkId)) {
-            try {
-                return new String(payload, "MS932");
-            } catch (UnsupportedEncodingException ignored) {
-                try {
-                    return new String(payload, "US-ASCII");
-                } catch (UnsupportedEncodingException ignoredAgain) {
-                    return new String(payload);
-                }
-            }
+            return decodeJapaneseText(payload);
         }
         return null;
+    }
+
+    private static String decodeJapaneseText(byte[] payload) {
+        String decoded = Cp932Decoder.decode(payload);
+        int i;
+
+        if (decoded != null) {
+            return decoded;
+        }
+
+        for (i = 0; i < JAPANESE_TEXT_ENCODINGS.length; i++) {
+            try {
+                return new String(payload, JAPANESE_TEXT_ENCODINGS[i]);
+            } catch (UnsupportedEncodingException ignored) {
+            }
+        }
+
+        try {
+            return new String(payload, "US-ASCII");
+        } catch (UnsupportedEncodingException ignored) {
+            return new String(payload);
+        }
     }
 
     private static final class ChunkSpec {

@@ -1,6 +1,7 @@
 <project name="MLDPlayerJ2ME" default="dist" basedir=".">
 
     <property name="src.dir" value="src"/>
+    <property name="res.dir" value="res"/>
     <property name="lib.dir" value="lib"/>
     <property name="build.dir" value="build"/>
     <property name="classes.dir" value="${build.dir}/classes"/>
@@ -9,8 +10,9 @@
     <property name="dist.name" value="MLDPlayer"/>
     <property name="midlet.name" value="MLD Player"/>
     <property name="midlet.vendor" value="Magstic"/>
-    <property name="midlet.version" value="0.1.0"/>
+    <property name="midlet.version" value="1.0.0"/>
     <property name="midlet.main.class" value="main.MainMidlet"/>
+    <property name="midlet.icon.path" value="/icon.png"/>
 
     <condition property="wtk.home" value="C:/Java_ME_platform_SDK_3.4">
         <available file="C:/Java_ME_platform_SDK_3.4" type="dir"/>
@@ -84,12 +86,14 @@
                 <attribute name="MIDlet-Name" value="${midlet.name}"/>
                 <attribute name="MIDlet-Vendor" value="${midlet.vendor}"/>
                 <attribute name="MIDlet-Version" value="${midlet.version}"/>
-                <attribute name="MIDlet-1" value="${midlet.name}, , ${midlet.main.class}"/>
+                <attribute name="MIDlet-Icon" value="${midlet.icon.path}"/>
+                <attribute name="MIDlet-1" value="${midlet.name}, ${midlet.icon.path}, ${midlet.main.class}"/>
                 <attribute name="MicroEdition-Profile" value="MIDP-2.0"/>
                 <attribute name="MicroEdition-Configuration" value="CLDC-1.1"/>
                 <attribute name="MIDlet-Permissions-Opt" value="javax.microedition.io.Connector.file.read"/>
             </manifest>
             <fileset dir="${classes.dir}" includes="**/*.class"/>
+            <zipfileset dir="${res.dir}" includes="**/*" erroronmissingdir="false"/>
         </jar>
     </target>
 
@@ -136,10 +140,10 @@
         <echo file="${dist.dir}/${dist.name}.jad" encoding="UTF-8">MIDlet-Name: ${midlet.name}
 MIDlet-Vendor: ${midlet.vendor}
 MIDlet-Version: ${midlet.version}
-MIDlet-1: ${midlet.name}, , ${midlet.main.class}
+MIDlet-Icon: ${midlet.icon.path}
+MIDlet-1: ${midlet.name}, ${midlet.icon.path}, ${midlet.main.class}
 MicroEdition-Profile: MIDP-2.0
 MicroEdition-Configuration: CLDC-1.1
-MIDlet-Permissions-Opt: javax.microedition.io.Connector.file.read
 MIDlet-Jar-URL: ${dist.name}.jar
 MIDlet-Jar-Size: ${jar.size}
 </echo>
