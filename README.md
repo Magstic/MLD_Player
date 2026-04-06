@@ -1,5 +1,7 @@
 # MLD Player
 
+[JavaSE](https://github.com/Magstic/MLD_Player) | [J2ME](https://github.com/Magstic/MLD_Player/tree/j2me) | [Android](https://github.com/Magstic/MLD_Player/tree/android)
+
 MLD Player's Android branch, plays MLD melody via MIDI stream.
 
 ## Play
@@ -8,11 +10,11 @@ Android 8-12
 
 ## Build
 
-JDK 17
+See [docs/build.md].
 
-```bash
-./gradlew assembleRelease
-```
+## Tree
+
+See [docs/tree.md]
 
 ## Known Gaps
 
