@@ -1,0 +1,316 @@
+<?xml version="1.0" encoding="utf-8"?>
+<androidx.coordinatorlayout.widget.CoordinatorLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="?attr/colorSurface">
+
+    <ScrollView
+        android:id="@+id/player_scroll"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:clipToPadding="false"
+        android:fillViewport="true"
+        android:paddingStart="24dp"
+        android:paddingTop="24dp"
+        android:paddingEnd="24dp"
+        android:paddingBottom="296dp">
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical">
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:gravity="center_vertical"
+                android:orientation="horizontal">
+
+                <TextView
+                    android:id="@+id/player_page_title"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:text="@string/player_tab"
+                    android:textAppearance="?attr/textAppearanceHeadlineSmall"
+                    android:textStyle="bold" />
+
+                <com.google.android.material.card.MaterialCardView
+                    android:id="@+id/status_pill"
+                    style="@style/Widget.MLDPlayer.Card.Subtle"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    app:cardCornerRadius="16dp">
+
+                    <LinearLayout
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:gravity="center_vertical"
+                        android:orientation="horizontal"
+                        android:paddingStart="12dp"
+                        android:paddingTop="6dp"
+                        android:paddingEnd="12dp"
+                        android:paddingBottom="6dp">
+
+                        <View
+                            android:id="@+id/status_dot"
+                            android:layout_width="8dp"
+                            android:layout_height="8dp"
+                            android:background="@android:color/white" />
+
+                        <ImageView
+                            android:id="@+id/status_icon"
+                            android:layout_width="16dp"
+                            android:layout_height="16dp"
+                            android:layout_marginStart="6dp"
+                            android:src="@drawable/ic_note" />
+
+                        <TextView
+                            android:id="@+id/status_text"
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:layout_marginStart="6dp"
+                            android:textAppearance="?attr/textAppearanceLabelMedium"
+                            android:textStyle="bold" />
+                    </LinearLayout>
+                </com.google.android.material.card.MaterialCardView>
+            </LinearLayout>
+
+            <TextView
+                android:id="@+id/player_page_subtitle"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="6dp"
+                android:text="@string/player_empty_message"
+                android:textAppearance="?attr/textAppearanceBodyMedium" />
+
+            <!-- Spacer to push the rest of the layout to the bottom half -->
+            <Space
+                android:layout_width="match_parent"
+                android:layout_height="0dp"
+                android:layout_weight="1"
+                android:minHeight="32dp" />
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:animateLayoutChanges="true"
+                android:orientation="vertical">
+
+                <com.magstic.mldplayer.PausedMarqueeTextView
+                    android:id="@+id/title_text"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:fadeScrollbars="false"
+                    android:scrollbars="none"
+                    android:singleLine="true"
+                    android:gravity="start|center_vertical"
+                    android:textSize="28sp"
+                    android:textAppearance="?attr/textAppearanceHeadlineMedium"
+                    android:textStyle="bold" />
+
+                <TextView
+                    android:id="@+id/copyright_text"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="6dp"
+                    android:ellipsize="end"
+                    android:gravity="start|center_vertical"
+                    android:singleLine="true"
+                    android:textColor="?attr/colorOnSurfaceVariant"
+                    android:textSize="18sp"
+                    android:textAppearance="?attr/textAppearanceTitleMedium" />
+
+                <com.magstic.mldplayer.SpectrumView
+                    android:id="@+id/spectrum_view"
+                    android:layout_width="match_parent"
+                    android:layout_height="160dp"
+                    android:layout_marginTop="36dp" />
+
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="24dp"
+                    android:gravity="center_vertical"
+                    android:orientation="horizontal">
+
+                    <TextView
+                        android:id="@+id/position_text"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="@string/unknown_duration"
+                        android:textAppearance="?attr/textAppearanceLabelLarge"
+                        android:textColor="?attr/colorOnSurfaceVariant"
+                        android:textStyle="bold" />
+
+                    <com.google.android.material.progressindicator.LinearProgressIndicator
+                        android:id="@+id/progress_bar"
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_marginStart="16dp"
+                        android:layout_marginEnd="16dp"
+                        android:layout_weight="1"
+                        android:max="1000"
+                        android:progress="0"
+                        app:trackCornerRadius="6dp"
+                        app:trackStopIndicatorSize="0dp"
+                        app:indicatorTrackGapSize="2dp"
+                        app:trackThickness="12dp" />
+
+                    <TextView
+                        android:id="@+id/duration_text"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="@string/unknown_duration"
+                        android:textAppearance="?attr/textAppearanceLabelLarge"
+                        android:textColor="?attr/colorOnSurfaceVariant"
+                        android:textStyle="bold" />
+                </LinearLayout>
+
+                <LinearLayout
+                    android:id="@+id/controls_panel"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="40dp"
+                    android:layout_marginBottom="16dp"
+                    android:gravity="center"
+                    android:orientation="horizontal">
+
+                    <com.google.android.material.button.MaterialButton
+                        android:id="@+id/previous_button"
+                        style="@style/Widget.MLDPlayer.TransportButton"
+                        android:layout_width="72dp"
+                        android:layout_height="72dp"
+                        android:contentDescription="@string/previous"
+                        android:gravity="center"
+                        android:padding="0dp"
+                        app:cornerRadius="36dp"
+                        app:icon="@drawable/ic_skip_previous"
+                        app:iconGravity="textTop"
+                        app:iconPadding="0dp"
+                        app:iconSize="32dp" />
+
+                    <com.google.android.material.button.MaterialButton
+                        android:id="@+id/play_pause_button"
+                        style="@style/Widget.MLDPlayer.TransportButton.Primary"
+                        android:layout_width="96dp"
+                        android:layout_height="96dp"
+                        android:layout_marginStart="24dp"
+                        android:layout_marginEnd="24dp"
+                        android:contentDescription="@string/play_pause"
+                        android:gravity="center"
+                        android:padding="0dp"
+                        app:cornerRadius="48dp"
+                        app:icon="@drawable/ic_play_arrow"
+                        app:iconGravity="textTop"
+                        app:iconPadding="0dp"
+                        app:iconSize="48dp" />
+
+                    <com.google.android.material.button.MaterialButton
+                        android:id="@+id/next_button"
+                        style="@style/Widget.MLDPlayer.TransportButton"
+                        android:layout_width="72dp"
+                        android:layout_height="72dp"
+                        android:contentDescription="@string/next"
+                        android:gravity="center"
+                        android:padding="0dp"
+                        app:cornerRadius="36dp"
+                        app:icon="@drawable/ic_skip_next"
+                        app:iconGravity="textTop"
+                        app:iconPadding="0dp"
+                        app:iconSize="32dp" />
+                </LinearLayout>
+            </LinearLayout>
+        </LinearLayout>
+    </ScrollView>
+
+    <View
+        android:id="@+id/queue_focus_scrim"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:alpha="0"
+        android:background="#66101824"
+        android:clickable="false"
+        android:focusable="false"
+        android:visibility="gone" />
+
+    <LinearLayout
+        android:id="@+id/queue_sheet"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:background="@drawable/bg_queue_sheet"
+        android:clickable="true"
+        android:elevation="8dp"
+        android:orientation="vertical"
+        android:paddingStart="20dp"
+        android:paddingTop="12dp"
+        android:paddingEnd="20dp"
+        android:paddingBottom="28dp"
+        app:behavior_fitToContents="false"
+        app:behavior_halfExpandedRatio="0.6"
+        app:behavior_hideable="false"
+        app:layout_behavior="com.magstic.mldplayer.QueueBottomSheetBehavior">
+
+        <LinearLayout
+            android:id="@+id/queue_header"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:clickable="true"
+            android:focusable="true"
+            android:foreground="?attr/selectableItemBackground"
+            android:orientation="vertical"
+            android:paddingBottom="8dp">
+
+            <View
+                android:layout_width="36dp"
+                android:layout_height="4dp"
+                android:layout_gravity="center_horizontal"
+                android:background="?attr/colorOutlineVariant" />
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="16dp"
+                android:gravity="center_vertical"
+                android:orientation="horizontal">
+
+                <TextView
+                    android:id="@+id/queue_title"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:text="@string/queue"
+                    android:textAppearance="?attr/textAppearanceTitleLarge"
+                    android:textStyle="bold" />
+
+                <TextView
+                    android:id="@+id/queue_count"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginStart="12dp"
+                    android:textAppearance="?attr/textAppearanceLabelLarge"
+                    android:textStyle="bold" />
+            </LinearLayout>
+        </LinearLayout>
+
+        <TextView
+            android:id="@+id/queue_empty_text"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="16dp"
+            android:text="@string/queue_empty"
+            android:textAppearance="?attr/textAppearanceBodyLarge"
+            android:visibility="gone" />
+
+        <androidx.recyclerview.widget.RecyclerView
+            android:id="@+id/playlist_view"
+            android:layout_width="match_parent"
+            android:layout_height="0dp"
+            android:layout_marginTop="12dp"
+            android:layout_weight="1"
+            android:clipToPadding="false"
+            android:paddingBottom="32dp" />
+    </LinearLayout>
+
+</androidx.coordinatorlayout.widget.CoordinatorLayout>

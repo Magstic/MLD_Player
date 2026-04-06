@@ -1,0 +1,133 @@
+import java.util.Properties
+
+plugins {
+    id "com.android.application"
+}
+
+def keystoreProperties = new Properties()
+def keystorePropertiesFile = rootProject.file("keystore.properties")
+
+if (keystorePropertiesFile.exists()) {
+    keystorePropertiesFile.withInputStream { stream ->
+        keystoreProperties.load(stream)
+    }
+}
+
+def releaseStoreFilePath = keystoreProperties.getProperty("storeFile",
+        rootProject.file("my-release-key.jks").absolutePath)
+def releaseStoreFileValue = new File(releaseStoreFilePath).isAbsolute()
+        ? file(releaseStoreFilePath)
+        : rootProject.file(releaseStoreFilePath)
+def releaseStorePasswordValue = keystoreProperties.getProperty("storePassword", "")
+def releaseKeyAliasValue = keystoreProperties.getProperty("keyAlias", "myalias")
+def releaseKeyPasswordValue = keystoreProperties.getProperty("keyPassword", releaseStorePasswordValue)
+def hasCustomReleaseSigning = releaseStoreFileValue.exists()
+        && releaseStorePasswordValue != null
+        && releaseStorePasswordValue.trim().length() > 0
+        && releaseKeyAliasValue != null
+        && releaseKeyAliasValue.trim().length() > 0
+        && releaseKeyPasswordValue != null
+        && releaseKeyPasswordValue.trim().length() > 0
+
+android {
+    namespace "com.magstic.mldplayer"
+    compileSdk 34
+
+    defaultConfig {
+        applicationId "com.magstic.mldplayer"
+        minSdk 26
+        targetSdk 34
+        versionCode 1
+        versionName "1.0.0"
+
+        testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
+
+        externalNativeBuild {
+            cmake {
+                arguments "-DANDROID_STL=c++_shared"
+                cppFlags "-std=c++17"
+            }
+        }
+
+        ndk {
+            abiFilters "armeabi-v7a", "arm64-v8a", "x86", "x86_64"
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_1_8
+        targetCompatibility JavaVersion.VERSION_1_8
+    }
+
+    buildFeatures {
+        buildConfig true
+        prefab true
+    }
+
+    splits {
+        abi {
+            enable true
+            reset()
+            include "armeabi-v7a", "arm64-v8a", "x86", "x86_64"
+            universalApk true
+        }
+    }
+
+    externalNativeBuild {
+        cmake {
+            path file("src/main/cpp/CMakeLists.txt")
+        }
+    }
+
+    signingConfigs {
+        release {
+            if (hasCustomReleaseSigning) {
+                storeFile releaseStoreFileValue
+                storePassword releaseStorePasswordValue
+                keyAlias releaseKeyAliasValue
+                keyPassword releaseKeyPasswordValue
+            }
+        }
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled true
+            shrinkResources true
+            signingConfig hasCustomReleaseSigning ? signingConfigs.release : signingConfigs.debug
+            proguardFiles getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro"
+        }
+        debug {
+            minifyEnabled false
+        }
+    }
+}
+
+androidComponents {
+    beforeVariants(selector().withBuildType("debug")) { variantBuilder ->
+        variantBuilder.enable = false
+    }
+}
+
+configurations.configureEach {
+    exclude group: "org.jetbrains.kotlin", module: "kotlin-stdlib-jdk7"
+    exclude group: "org.jetbrains.kotlin", module: "kotlin-stdlib-jdk8"
+}
+
+tasks.withType(JavaCompile).configureEach {
+    options.compilerArgs += ["-Xlint:-options"]
+}
+
+dependencies {
+    implementation project(":core")
+    implementation "androidx.activity:activity:1.9.2"
+    implementation "androidx.appcompat:appcompat:1.7.0"
+    implementation "androidx.coordinatorlayout:coordinatorlayout:1.2.0"
+    implementation "androidx.constraintlayout:constraintlayout:2.1.4"
+    implementation "androidx.documentfile:documentfile:1.0.1"
+    implementation "androidx.core:core:1.13.1"
+    implementation "androidx.recyclerview:recyclerview:1.3.2"
+    implementation "androidx.media:media:1.7.0"
+    implementation "com.google.android.material:material:1.12.0"
+    implementation "net.volcanomobile.fluidsynth-android:fluidsynth-android:2.4.6"
+}

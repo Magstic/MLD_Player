@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<menu xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <item
+        android:id="@+id/navigation_player"
+        android:icon="@drawable/ic_nav_player"
+        android:title="@string/player_tab" />
+
+    <item
+        android:id="@+id/navigation_import"
+        android:icon="@drawable/ic_nav_import"
+        android:title="@string/import_tab" />
+
+    <item
+        android:id="@+id/navigation_settings"
+        android:icon="@drawable/ic_nav_settings"
+        android:title="@string/settings_tab" />
+
+</menu>

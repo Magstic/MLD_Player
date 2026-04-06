@@ -1,0 +1,77 @@
+<?xml version="1.0" encoding="utf-8"?>
+<com.google.android.material.card.MaterialCardView xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/item_root"
+    style="@style/Widget.MLDPlayer.Card.ListItem"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:layout_marginTop="6dp"
+    android:layout_marginBottom="6dp"
+    android:clickable="true"
+    android:focusable="true"
+    android:longClickable="true"
+    android:foreground="?attr/selectableItemBackground">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:gravity="center_vertical"
+        android:minHeight="76dp"
+        android:orientation="horizontal"
+        android:paddingStart="16dp"
+        android:paddingTop="8dp"
+        android:paddingEnd="16dp"
+        android:paddingBottom="8dp">
+
+        <LinearLayout
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:orientation="vertical">
+
+            <TextView
+                android:id="@+id/item_title"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:ellipsize="end"
+                android:maxLines="1"
+                android:textAppearance="?attr/textAppearanceBodyLarge"
+                android:textStyle="bold" />
+
+            <TextView
+                android:id="@+id/item_subtitle"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="4dp"
+                android:ellipsize="end"
+                android:maxLines="1"
+                android:textAppearance="?attr/textAppearanceBodySmall" />
+        </LinearLayout>
+
+        <FrameLayout
+            android:layout_width="52dp"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="12dp"
+            android:foregroundGravity="right|center_vertical">
+
+            <TextView
+                android:id="@+id/item_duration"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:gravity="right"
+                android:maxLines="1"
+                android:text="@string/unknown_duration"
+                android:textAppearance="?attr/textAppearanceLabelMedium"
+                android:textStyle="bold" />
+
+            <ImageView
+                android:id="@+id/item_state_icon"
+                android:layout_width="20dp"
+                android:layout_height="20dp"
+                android:layout_gravity="end|center_vertical"
+                android:contentDescription="@string/queue_now_playing"
+                android:src="@drawable/ic_play_arrow"
+                android:visibility="gone" />
+        </FrameLayout>
+    </LinearLayout>
+
+</com.google.android.material.card.MaterialCardView>

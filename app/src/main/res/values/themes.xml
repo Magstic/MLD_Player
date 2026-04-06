@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <style name="Theme.MLDPlayer" parent="Theme.Material3.DayNight.NoActionBar">
+        <item name="colorPrimary">@color/mld_primary</item>
+        <item name="colorOnPrimary">@color/mld_on_primary</item>
+        <item name="colorPrimaryContainer">@color/mld_primary_container</item>
+        <item name="colorOnPrimaryContainer">@color/mld_on_primary_container</item>
+        <item name="colorSecondary">@color/mld_secondary</item>
+        <item name="colorOnSecondary">@color/mld_on_secondary</item>
+        <item name="colorSecondaryContainer">@color/mld_secondary_container</item>
+        <item name="colorOnSecondaryContainer">@color/mld_on_secondary_container</item>
+        <item name="colorSurface">@color/mld_surface</item>
+        <item name="colorSurfaceVariant">@color/mld_surface_variant</item>
+        <item name="colorOnSurface">@color/mld_on_surface</item>
+        <item name="colorOnSurfaceVariant">@color/mld_on_surface_variant</item>
+        <item name="colorOutline">@color/mld_outline</item>
+        <item name="colorOutlineVariant">@color/mld_outline_variant</item>
+        <item name="colorError">@color/mld_error</item>
+        <item name="colorOnError">@color/mld_on_error</item>
+        <item name="android:windowBackground">@color/mld_background</item>
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:navigationBarColor">@android:color/transparent</item>
+    </style>
+</resources>
