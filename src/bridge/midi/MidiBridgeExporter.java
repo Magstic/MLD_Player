@@ -274,6 +274,7 @@ public final class MidiBridgeExporter {
         root.put("header", headerInfo(timeline));
         root.put("topLevelChunks", topLevelChunks(timeline));
         root.put("infoChunks", infoChunks(timeline));
+        root.put("cuePoints", cuePoints(timeline));
         root.put("resourceSummary", resourceSummary(timeline));
         root.put("initialChannelConfigs", initialChannelConfigs(timeline));
         root.put("tracks", trackSummaries(timeline));
@@ -324,6 +325,19 @@ public final class MidiBridgeExporter {
         map.put("noteExtraBytes", Integer.valueOf(timeline.file.noteExtraBytes));
         map.put("exstSize", Integer.valueOf(timeline.file.exstSize));
         return map;
+    }
+
+    private List<Object> cuePoints(PlaybackTimeline timeline) {
+        List<Object> list = new ArrayList<Object>();
+        for (int i = 0; i < timeline.file.cuePointOffsets.size(); i++) {
+            long offset = timeline.file.cuePointOffsets.get(i).longValue();
+            Map<String, Object> entry = new LinkedHashMap<String, Object>();
+            entry.put("trackIndex", Integer.valueOf(i));
+            entry.put("startOffset", Long.valueOf(offset));
+            entry.put("inactive", Boolean.valueOf(offset == 0xFFFFFFFFL));
+            list.add(entry);
+        }
+        return list;
     }
 
     private List<Object> infoChunks(PlaybackTimeline timeline) {

@@ -27,6 +27,9 @@ playback.
 - Tempo seeds come from ordinary timebase events:
   - `0xC0..0xC6`
   - `0xC8..0xCE`
+- Tempo-state events also include:
+  - `0xBC`: signed relative tempo adjustment
+  - `0xBF`: session reset to `120 BPM / timebase 48`
 - If no tempo seed exists, a synthetic tick-`0` seed of `120 BPM / timebase 48`
   is inserted.
 - If the first observed tempo seed starts after raw tick `0`, a synthetic
@@ -36,6 +39,10 @@ playback.
   - `midi_delta = raw_delta * 1920 / active_timebase`
 - Conductor tempo meta events use:
   - `mpqn = 60000000 / tempo`
+- `0xBC` keeps the active timebase and applies a signed 8-bit tempo delta,
+  clamped to `20..255`.
+- `0xBF` starts a new tempo segment at the reset tick using
+  `120 BPM / timebase 48`.
 - Scheduled note expiries at raw tick `T` are flushed before any other event at
   raw tick `T`.
 
@@ -174,12 +181,19 @@ GM output.
 
 ## Ordinary Control Mapping
 
-Tempo events:
+Tempo-state events:
 
-- `0xC0..0xCE` emit conductor-track MIDI tempo meta only
+- `0xC0..0xC6` and `0xC8..0xCE` update timebase / tempo and emit
+  conductor-track MIDI tempo meta only
+- `0xBC` updates the active tempo by signed relative delta and emits
+  conductor-track MIDI tempo meta only
+- `0xBF` restores `120 BPM / timebase 48` and also performs the session reset
+  described below
 
 State-only events:
 
+- `0xD0`, `0xDE`, and `0xDF` are timeline cue / no-op / end markers and emit no
+  sounding MIDI message
 - `0xDC` extends the next raw delta and emits no MIDI message
 - `0xDD` updates loop metadata and emits no MIDI message
 - `0xE5` rewrites the lane-to-logical-channel map and emits no MIDI message
@@ -190,6 +204,11 @@ Mapped controls:
 | MLD event | State update | Emitted MIDI |
 |---|---|---|
 | `0xB0` | no per-channel cache update | `CC7` on all `16` MIDI channels, value `clamp(0,127,value)` |
+| `0xB1` | no per-channel cache update | `CC10` on all `16` MIDI channels, value `clamp(0,127,value)` |
+| `0xB3` | no per-channel cache update; values outside `0x34..0x4C` are ignored | pitch bend on all `16` MIDI channels |
+| `0xBD` | no per-channel cache update | same output as `0xB0` |
+| `0xBE` | accepted as global stop only when `value == 0` | note-offs for active ordinary notes plus `CC120` All Sound Off on all `16` MIDI channels |
+| `0xBF` | session reset | note-offs for active ordinary notes, `CC120` All Sound Off, then reset defaults on all `16` MIDI channels |
 | `0xE2` | `level = value & 0x3F` | `CC7 = computePsmVolumeSync(level)`, currently `2 * level` |
 | `0xE6` | `level += (value & 0x3F) - 32`, clamp `0..63` | `CC7 = computePsmVolumeSync(level)`, currently `2 * level` |
 | `0xE3` | `pan = value & 0x3F` | `CC10 = 2 * pan` |
@@ -209,16 +228,25 @@ Pitch-range rule:
 
 CC7 interaction rule:
 
-- `0xB0` and `0xE2/E6` all emit host `CC7`
-- `0xB0` is an immediate all-channel broadcast and does not rewrite any
+- `0xB0`, `0xBD`, and `0xE2/E6` all emit host `CC7`
+- `0xB0` and `0xBD` are immediate all-channel broadcasts and do not rewrite any
   per-channel `level` cache
 - `0xE2/E6` rewrite one logical channel's `level` cache, then emit that
   channel's current synchronized host volume
-- later `0xE2/E6` on one channel can therefore overwrite an earlier `0xB0`
-  broadcast on that channel only
+- later `0xE2/E6` on one channel can therefore overwrite an earlier `0xB0` /
+  `0xBD` broadcast on that channel only
 - deduplication is applied on final emitted `(midiChannel, controller, value)`
   only; identical consecutive `CC7` writes coalesce even if their MLD sources
   differ
+
+Global stop and reset:
+
+- nonzero `0xBE` values do not form an established global stop
+- accepted `0xBE` stops currently sounding ordinary notes immediately
+- accepted `0xBE` does not restore channel defaults or lane assignment defaults
+- `0xBF` stops currently sounding ordinary notes immediately
+- `0xBF` restores ordinary channel defaults, lane assignment defaults, and the
+  default tempo state
 
 Deduplication:
 

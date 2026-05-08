@@ -5,6 +5,11 @@ import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.List;
 
+import bridge.mld.GeneratedMldSong;
+import bridge.mld.ImportedMidiSong;
+import bridge.mld.MidiSequenceImporter;
+import bridge.mld.MidiToMldConverter;
+import bridge.mld.MldContainerWriter;
 import bridge.midi.MidiBridgeExporter;
 import container.MldFile;
 import container.MldParser;
@@ -39,6 +44,12 @@ public final class Cli {
     private void run(Arguments arguments) throws Exception {
         Path inputPath = arguments.inputPath.toAbsolutePath().normalize();
         Path outputDir = arguments.outputDir != null ? arguments.outputDir.toAbsolutePath().normalize() : null;
+        Path toMldPath = arguments.toMldPath != null ? arguments.toMldPath.toAbsolutePath().normalize() : null;
+
+        if (toMldPath != null) {
+            convertMidiToMld(inputPath, toMldPath);
+            return;
+        }
 
         PlaybackTimeline timeline = buildTimeline(inputPath);
 
@@ -54,6 +65,40 @@ public final class Cli {
 
         if (!combinedWarnings.isEmpty()) {
             System.out.print(renderWarnings(combinedWarnings));
+        }
+    }
+
+    private void convertMidiToMld(Path inputPath, Path outputPath) throws Exception {
+        MidiSequenceImporter importer = new MidiSequenceImporter();
+        ImportedMidiSong imported = importer.importSequence(inputPath);
+        GeneratedMldSong generated = new MidiToMldConverter().convert(imported);
+        new MldContainerWriter().writeToPath(generated, outputPath);
+
+        PlaybackTimeline validatedTimeline = buildTimeline(outputPath);
+        List<String> warnings = new ArrayList<String>();
+        warnings.addAll(imported.warnings);
+        warnings.addAll(generated.warnings);
+        warnings.addAll(collectWarnings(validatedTimeline));
+
+        System.out.println("MIDI -> MLD");
+        System.out.println(SECTION_DIVIDER);
+        System.out.println("Input: " + inputPath);
+        System.out.println("Output: " + outputPath);
+        System.out.println("Title: " + generated.title);
+        System.out.println("Copyright: " + generated.copyright);
+        System.out.println("Input PPQ: " + imported.inputPpq);
+        System.out.println("Selected timebase: " + generated.timebase);
+        System.out.println("Generated tracks: " + generated.trackCount);
+        System.out.println("Generated notes: " + generated.noteCount);
+        System.out.println("Generated controls: " + generated.controlCount);
+        System.out.println("Generated tempos: " + generated.tempoCount);
+        System.out.println("Validated compiled notes: " + validatedTimeline.notes.size());
+        System.out.println("Validated tempo points: " + validatedTimeline.tempoPoints.size());
+        System.out.println("Validated mapped controls: " + validatedTimeline.mappedControls.size());
+        System.out.println(BOX_BORDER);
+
+        if (!warnings.isEmpty()) {
+            System.out.print(renderWarnings(warnings));
         }
     }
 
@@ -154,6 +199,7 @@ public final class Cli {
     private static void printUsage() {
         System.out.println("Usage:");
         System.out.println("  java -jar mld-player.jar <file.mld> [--output <dir>] [--loop [<n|infinite>]]");
+        System.out.println("  java -jar mld-player.jar <file.mid> --to-mld <file.mld>");
         System.out.println("Launcher:");
         System.out.println("  java -jar mld-player.jar            open the Swing player");
         System.out.println("  java -jar mld-player.jar --gui      force the Swing player");
@@ -162,6 +208,7 @@ public final class Cli {
         System.out.println("  looped files repeat infinitely by default");
         System.out.println("Options:");
         System.out.println("  --output <path>        optional output directory for MIDI / bridge.json");
+        System.out.println("  --to-mld <path>        convert a PPQ MIDI file into an MLD file");
         System.out.println("  --loop [<value>]       override playback loop count; use without a value for infinite");
         System.out.println("  --help                 show this message");
     }
@@ -194,13 +241,15 @@ public final class Cli {
     private static final class Arguments {
         final Path inputPath;
         final Path outputDir;
+        final Path toMldPath;
         final int loopCount;
         final boolean loopSpecified;
         final boolean showHelp;
 
-        Arguments(Path inputPath, Path outputDir, int loopCount, boolean loopSpecified, boolean showHelp) {
+        Arguments(Path inputPath, Path outputDir, Path toMldPath, int loopCount, boolean loopSpecified, boolean showHelp) {
             this.inputPath = inputPath;
             this.outputDir = outputDir;
+            this.toMldPath = toMldPath;
             this.loopCount = loopCount;
             this.loopSpecified = loopSpecified;
             this.showHelp = showHelp;
@@ -209,6 +258,7 @@ public final class Cli {
         static Arguments parse(String[] args) {
             Path input = null;
             Path output = null;
+            Path toMld = null;
             int loopCount = 0;
             boolean loopSpecified = false;
             boolean showHelp = false;
@@ -221,6 +271,10 @@ public final class Cli {
                 }
                 if ("--output".equals(arg) && i + 1 < args.length) {
                     output = Paths.get(args[++i]);
+                    continue;
+                }
+                if ("--to-mld".equals(arg) && i + 1 < args.length) {
+                    toMld = Paths.get(args[++i]);
                     continue;
                 }
                 if ("--loop".equals(arg)) {
@@ -242,7 +296,14 @@ public final class Cli {
                 throw new IllegalArgumentException("Unknown or incomplete argument: " + arg);
             }
 
-            return new Arguments(input, output, loopCount, loopSpecified, showHelp);
+            if (toMld != null && output != null) {
+                throw new IllegalArgumentException("--output cannot be used together with --to-mld.");
+            }
+            if (toMld != null && loopSpecified) {
+                throw new IllegalArgumentException("--loop cannot be used together with --to-mld.");
+            }
+
+            return new Arguments(input, output, toMld, loopCount, loopSpecified, showHelp);
         }
 
         private static int parseLoopCount(String value) {

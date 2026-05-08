@@ -26,6 +26,8 @@ public final class MldParser {
             "note",
             "exst",
             "supt");
+    private static final Set<String> TOP_LEVEL_BE16_CUE_CHUNK_IDS = createSet(
+            "cuep");
     private static final Set<String> TOP_LEVEL_BE16_RESOURCE_CHUNK_IDS = createSet(
             "thrd",
             "ainf");
@@ -54,6 +56,7 @@ public final class MldParser {
         int exstSize = 0;
         boolean noteSeen = false;
         boolean exstSeen = false;
+        List<Long> cuePointOffsets = new ArrayList<Long>();
         List<TopLevelChunk> topLevelChunks = new ArrayList<TopLevelChunk>();
         List<InfoChunk> infoChunks = new ArrayList<InfoChunk>();
         List<TrackChunk> tracks = new ArrayList<TrackChunk>();
@@ -116,6 +119,8 @@ public final class MldParser {
                     exstSize = readBe16(payload, 0);
                     exstSeen = true;
                 }
+            } else if ("cuep".equals(chunkId)) {
+                cuePointOffsets = parseCuePointOffsets(payload, trackCount);
             }
 
             if (INFO_CHUNK_IDS.contains(chunkId)) {
@@ -137,6 +142,7 @@ public final class MldParser {
                 trackCount,
                 noteExtraBytes,
                 exstSize,
+                cuePointOffsets,
                 topLevelChunks,
                 infoChunks,
                 tracks);
@@ -145,6 +151,9 @@ public final class MldParser {
     private static ChunkSpec specForTopLevelChunk(String chunkId) {
         if (INFO_CHUNK_IDS.contains(chunkId)) {
             return new ChunkSpec(2, "info");
+        }
+        if (TOP_LEVEL_BE16_CUE_CHUNK_IDS.contains(chunkId)) {
+            return new ChunkSpec(2, "cue");
         }
         if ("adat".equals(chunkId)) {
             return new ChunkSpec(4, "resource");
@@ -179,6 +188,17 @@ public final class MldParser {
                 | ((long) (data[offset + 1] & 0xFF) << 16)
                 | ((long) (data[offset + 2] & 0xFF) << 8)
                 | ((long) (data[offset + 3] & 0xFF));
+    }
+
+    private static List<Long> parseCuePointOffsets(byte[] payload, int trackCount) throws IOException {
+        if (payload.length != trackCount * 4) {
+            throw new IOException("Top-level cuep chunk must contain one 32-bit offset per declared track");
+        }
+        List<Long> offsets = new ArrayList<Long>();
+        for (int i = 0; i < trackCount; i++) {
+            offsets.add(Long.valueOf(readBe32(payload, i * 4)));
+        }
+        return offsets;
     }
 
     private static String decodeTextIfUseful(String chunkId, byte[] payload) {

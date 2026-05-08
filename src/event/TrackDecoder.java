@@ -244,7 +244,13 @@ public final class TrackDecoder {
     private static Map<Integer, String> createCommandNames() {
         Map<Integer, String> map = new HashMap<Integer, String>();
         map.put(0xB0, "master_volume");
+        map.put(0xB1, "master_balance");
+        map.put(0xB3, "master_tuning");
         map.put(0xBA, "patch_mode");
+        map.put(0xBC, "relative_tempo");
+        map.put(0xBD, "master_volume");
+        map.put(0xBE, "global_stop");
+        map.put(0xBF, "session_reset");
         map.put(0xC0, "tempo_tb_6");
         map.put(0xC1, "tempo_tb_12");
         map.put(0xC2, "tempo_tb_24");

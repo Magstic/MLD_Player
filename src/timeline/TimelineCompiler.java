@@ -24,6 +24,10 @@ import normalize.MdNormalizationResult;
 public final class TimelineCompiler {
     private static final int MIDI_CHANNEL_COUNT = 16;
     private static final int MAX_LOGICAL_CHANNELS = 64;
+    private static final int DEFAULT_TIMEBASE = 48;
+    private static final int DEFAULT_TEMPO = 120;
+    private static final int MIN_TEMPO = 20;
+    private static final int MAX_TEMPO = 255;
     private static final int DEFAULT_LEVEL = 63;
     private static final int DEFAULT_PAN = 32;
     private static final int DEFAULT_PITCH_COARSE = 32;
@@ -141,8 +145,19 @@ public final class TimelineCompiler {
                 SystemEvent systemEvent = (SystemEvent) event;
                 long midiTick = mapper.rawToMidiTick(systemEvent.rawTick);
                 totalMidiTicks = Math.max(totalMidiTicks, midiTick);
-                handleSystemEvent(systemEvent, midiTick, controlCollector, unmappedControls, channels, outputLaneTracker,
-                        voiceMap, ordinaryNativeControls, warnings, warningKeys);
+                handleSystemEvent(
+                        systemEvent,
+                        midiTick,
+                        controlCollector,
+                        unmappedControls,
+                        notes,
+                        activeNotes,
+                        channels,
+                        outputLaneTracker,
+                        voiceMap,
+                        ordinaryNativeControls,
+                        warnings,
+                        warningKeys);
             }
         }
 
@@ -450,19 +465,35 @@ public final class TimelineCompiler {
 
     private List<RawTempoPoint> collectTempoSeeds(List<TrackDecodeResult> decodedTracks) {
         List<RawTempoPoint> seeds = new ArrayList<RawTempoPoint>();
-        for (TrackDecodeResult track : decodedTracks) {
-            for (TrackEvent event : track.events) {
-                if (event instanceof SystemEvent && isTempo((SystemEvent) event)) {
-                    SystemEvent systemEvent = (SystemEvent) event;
-                    seeds.add(new RawTempoPoint(
-                            systemEvent.rawTick,
-                            systemEvent.timebase > 0 ? systemEvent.timebase : 48,
-                            systemEvent.value > 0 ? systemEvent.value : 120,
-                            systemEvent.trackIndex,
-                            systemEvent.eventIndex,
-                            false));
-                }
+        int currentTimebase = DEFAULT_TIMEBASE;
+        int currentTempo = DEFAULT_TEMPO;
+        for (TrackEvent event : collectOrderedEvents(decodedTracks)) {
+            if (!(event instanceof SystemEvent)) {
+                continue;
             }
+            SystemEvent systemEvent = (SystemEvent) event;
+            if (!isTempo(systemEvent) && systemEvent.command != 0xBC && systemEvent.command != 0xBF) {
+                continue;
+            }
+            if (seeds.isEmpty() && systemEvent.rawTick > 0) {
+                seeds.add(new RawTempoPoint(0, currentTimebase, currentTempo, -1, -1, true));
+            }
+            if (isTempo(systemEvent)) {
+                currentTimebase = systemEvent.timebase > 0 ? systemEvent.timebase : currentTimebase;
+                currentTempo = systemEvent.value > 0 ? systemEvent.value : currentTempo;
+            } else if (systemEvent.command == 0xBC) {
+                currentTempo = clamp(MIN_TEMPO, MAX_TEMPO, currentTempo + signedByte(systemEvent.value));
+            } else if (systemEvent.command == 0xBF) {
+                currentTimebase = DEFAULT_TIMEBASE;
+                currentTempo = DEFAULT_TEMPO;
+            }
+            seeds.add(new RawTempoPoint(
+                    systemEvent.rawTick,
+                    currentTimebase,
+                    currentTempo,
+                    systemEvent.trackIndex,
+                    systemEvent.eventIndex,
+                    false));
         }
         return seeds;
     }
@@ -471,7 +502,7 @@ public final class TimelineCompiler {
         List<PlaybackTimeline.TempoPoint> points = new ArrayList<PlaybackTimeline.TempoPoint>();
         if (seeds.isEmpty()) {
             warnings.add("No tempo event observed; inserting synthetic 120 BPM / timebase 48 point.");
-            seeds.add(new RawTempoPoint(0, 48, 120, -1, -1, true));
+            seeds.add(new RawTempoPoint(0, DEFAULT_TIMEBASE, DEFAULT_TEMPO, -1, -1, true));
         } else if (seeds.get(0).rawTick > 0) {
             warnings.add("First tempo event does not start at tick 0; inserting synthetic point at origin.");
             RawTempoPoint first = seeds.get(0);
@@ -817,6 +848,8 @@ public final class TimelineCompiler {
             long midiTick,
             ControlCollector controlCollector,
             List<PlaybackTimeline.UnmappedControlEvent> unmappedControls,
+            List<PlaybackTimeline.CompiledNote> notes,
+            Map<Integer, ActiveNote> activeNotes,
             ChannelState[] channels,
             OutputLaneTracker outputLaneTracker,
             int[] voiceMap,
@@ -833,6 +866,14 @@ public final class TimelineCompiler {
                 controlCollector.emitMasterVolume(systemEvent.trackIndex, systemEvent.command, systemEvent.name, midiTick,
                         clamp(0, 127, systemEvent.value));
                 break;
+            case 0xB1:
+                controlCollector.emitMasterPan(systemEvent.trackIndex, systemEvent.command, systemEvent.name, midiTick,
+                        clamp(0, 127, systemEvent.value));
+                break;
+            case 0xB3:
+                controlCollector.emitMasterTune(systemEvent.trackIndex, systemEvent.command, systemEvent.name, midiTick,
+                        systemEvent.value & 0x7F);
+                break;
             case 0xD0:
             case 0xDC:
             case 0xDD:
@@ -843,6 +884,18 @@ public final class TimelineCompiler {
             case 0xBA:
                 applyPatchModeChange(systemEvent, midiTick, controlCollector, channels, outputLaneTracker);
                 reportAsUnmapped = true;
+                break;
+            case 0xBC:
+                break;
+            case 0xBD:
+                controlCollector.emitMasterVolume(systemEvent.trackIndex, systemEvent.command, systemEvent.name, midiTick,
+                        clamp(0, 127, systemEvent.value));
+                break;
+            case 0xBE:
+                applyGlobalStop(systemEvent, midiTick, controlCollector, notes, activeNotes, warnings, warningKeys);
+                break;
+            case 0xBF:
+                applySessionReset(systemEvent, midiTick, controlCollector, notes, activeNotes, channels, voiceMap);
                 break;
             case 0xE0:
                 applyProgramChange(systemEvent, midiTick, controlCollector, channels, outputLaneTracker, voiceMap,
@@ -1200,6 +1253,52 @@ public final class TimelineCompiler {
         }
     }
 
+    private void applyGlobalStop(
+            SystemEvent systemEvent,
+            long midiTick,
+            ControlCollector controlCollector,
+            List<PlaybackTimeline.CompiledNote> notes,
+            Map<Integer, ActiveNote> activeNotes,
+            List<String> warnings,
+            Set<String> warningKeys) {
+        if (systemEvent.value != 0) {
+            addWarningOnce(warnings, warningKeys, "global_stop_nonzero_" + systemEvent.rawTick,
+                    "Ignoring nonzero global stop value " + systemEvent.value + " at raw tick " + systemEvent.rawTick + ".");
+            return;
+        }
+        forceStopActiveNotes(systemEvent.rawTick, midiTick, notes, activeNotes);
+        controlCollector.emitAllSoundOff(systemEvent.trackIndex, systemEvent.command, systemEvent.name, midiTick);
+    }
+
+    private void applySessionReset(
+            SystemEvent systemEvent,
+            long midiTick,
+            ControlCollector controlCollector,
+            List<PlaybackTimeline.CompiledNote> notes,
+            Map<Integer, ActiveNote> activeNotes,
+            ChannelState[] channels,
+            int[] voiceMap) {
+        forceStopActiveNotes(systemEvent.rawTick, midiTick, notes, activeNotes);
+        controlCollector.emitAllSoundOff(systemEvent.trackIndex, systemEvent.command, systemEvent.name, midiTick);
+        resetChannelStates(channels);
+        resetVoiceMap(voiceMap);
+        controlCollector.resetCaches();
+        emitInitialMidiDefaults(controlCollector, channels, midiTick);
+    }
+
+    private void forceStopActiveNotes(
+            int rawEndTick,
+            long midiEndTick,
+            List<PlaybackTimeline.CompiledNote> notes,
+            Map<Integer, ActiveNote> activeNotes) {
+        Iterator<Map.Entry<Integer, ActiveNote>> iterator = activeNotes.entrySet().iterator();
+        while (iterator.hasNext()) {
+            ActiveNote active = iterator.next().getValue();
+            notes.add(active.toStoppedCompiledNote(rawEndTick, midiEndTick));
+            iterator.remove();
+        }
+    }
+
     private void applyPatchModeChange(
             SystemEvent systemEvent,
             long midiTick,
@@ -1247,13 +1346,17 @@ public final class TimelineCompiler {
     }
 
     private void emitInitialMidiDefaults(ControlCollector controlCollector, ChannelState[] channels) {
+        emitInitialMidiDefaults(controlCollector, channels, 0L);
+    }
+
+    private void emitInitialMidiDefaults(ControlCollector controlCollector, ChannelState[] channels, long midiTick) {
         for (int midiChannel = 0; midiChannel < MIDI_CHANNEL_COUNT; midiChannel++) {
             ChannelState channel = channels[midiChannel];
-            controlCollector.emitVolume(-1, -1, "default_level", midiChannel, 0L, computePsmVolumeSync(channel, midiChannel));
-            controlCollector.emitPan(-1, -1, "default_pan", midiChannel, 0L, computePsmPanSync(channel));
-            controlCollector.emitPitchRange(-1, -1, "default_pitch_range", midiChannel, 0L, channel.pitchRange);
-            controlCollector.emitPitchBend(-1, -1, "default_pitch", midiChannel, 0L, computePitchBend(channel));
-            controlCollector.emitModulation(-1, -1, "default_modulation", midiChannel, 0L, channel.modulation * 2);
+            controlCollector.emitVolume(-1, -1, "default_level", midiChannel, midiTick, computePsmVolumeSync(channel, midiChannel));
+            controlCollector.emitPan(-1, -1, "default_pan", midiChannel, midiTick, computePsmPanSync(channel));
+            controlCollector.emitPitchRange(-1, -1, "default_pitch_range", midiChannel, midiTick, channel.pitchRange);
+            controlCollector.emitPitchBend(-1, -1, "default_pitch", midiChannel, midiTick, computePitchBend(channel));
+            controlCollector.emitModulation(-1, -1, "default_modulation", midiChannel, midiTick, channel.modulation * 2);
         }
     }
 
@@ -1901,10 +2004,20 @@ public final class TimelineCompiler {
 
     private static int[] createIdentityVoiceMap(int count) {
         int[] map = new int[count];
-        for (int i = 0; i < count; i++) {
+        resetVoiceMap(map);
+        return map;
+    }
+
+    private static void resetVoiceMap(int[] map) {
+        for (int i = 0; i < map.length; i++) {
             map[i] = i;
         }
-        return map;
+    }
+
+    private static void resetChannelStates(ChannelState[] channels) {
+        for (int i = 0; i < channels.length; i++) {
+            channels[i] = new ChannelState();
+        }
     }
 
     private static boolean isTempo(SystemEvent systemEvent) {
@@ -1952,6 +2065,17 @@ public final class TimelineCompiler {
 
     private static int computePitchBend(ChannelState channel) {
         return clamp(0, 16383, (8 * (channel.pitchFine + (32 * channel.pitchCoarse))) - 256);
+    }
+
+    private static int computeMasterTunePitchBend(int value) {
+        int centsAdjustment = ((value & 0x7F) - 0x40) * 100;
+        int pitchBendValue = ((centsAdjustment * 8192) / 1200) + 8192;
+        return clamp(0, 16383, pitchBendValue);
+    }
+
+    private static int signedByte(int value) {
+        int unsigned = value & 0xFF;
+        return unsigned >= 0x80 ? unsigned - 0x100 : unsigned;
     }
 
     private static long normalizeMidiEnd(long midiStartTick, long midiEndTick) {
@@ -2291,6 +2415,20 @@ public final class TimelineCompiler {
                     normalizeMidiEnd(midiStartTick, refreshedMidiEndTick));
         }
 
+        PlaybackTimeline.CompiledNote toStoppedCompiledNote(int stoppedRawEndTick, long stoppedMidiEndTick) {
+            return new PlaybackTimeline.CompiledNote(
+                    sourceTrack,
+                    sourceVoice,
+                    midiChannel,
+                    midiTrackIndex,
+                    midiNote,
+                    velocity,
+                    rawStartTick,
+                    Math.max(rawStartTick, stoppedRawEndTick),
+                    midiStartTick,
+                    normalizeMidiEnd(midiStartTick, stoppedMidiEndTick));
+        }
+
         PlaybackTimeline.CompiledNote toFinalCompiledNote() {
             return new PlaybackTimeline.CompiledNote(
                     sourceTrack,
@@ -2368,6 +2506,34 @@ public final class TimelineCompiler {
             }
         }
 
+        void emitMasterPan(int sourceTrack, int sourceCommand, String sourceName, long midiTick, int value) {
+            for (int midiChannel = 0; midiChannel < MIDI_CHANNEL_COUNT; midiChannel++) {
+                emitDedupedControl(sourceTrack, sourceCommand, sourceName, midiChannel, midiTick, 10,
+                        clamp(0, 127, value));
+            }
+        }
+
+        void emitMasterTune(int sourceTrack, int sourceCommand, String sourceName, long midiTick, int value) {
+            if (value < 0x34 || value > 0x4C) {
+                return;
+            }
+            int pitchBend = computeMasterTunePitchBend(value);
+            for (int midiChannel = 0; midiChannel < MIDI_CHANNEL_COUNT; midiChannel++) {
+                emitPitchBend(sourceTrack, sourceCommand, sourceName, midiChannel, midiTick, pitchBend);
+            }
+        }
+
+        void emitAllSoundOff(int sourceTrack, int sourceCommand, String sourceName, long midiTick) {
+            for (int midiChannel = 0; midiChannel < MIDI_CHANNEL_COUNT; midiChannel++) {
+                emitImmediateControl(sourceTrack, sourceCommand, sourceName, midiChannel, midiTick, 120, 0);
+            }
+        }
+
+        void resetCaches() {
+            lastControlValues.clear();
+            lastPitchBendValues.clear();
+        }
+
         private void emitDedupedControl(
                 int sourceTrack,
                 int sourceCommand,
@@ -2382,6 +2548,18 @@ public final class TimelineCompiler {
             }
             lastControlValues.put(key, Integer.valueOf(value));
             emit(sourceTrack, sourceCommand, sourceName, midiChannel, midiTick, ShortMessage.CONTROL_CHANGE, controller, value);
+        }
+
+        private void emitImmediateControl(
+                int sourceTrack,
+                int sourceCommand,
+                String sourceName,
+                int midiChannel,
+                long midiTick,
+                int controller,
+                int value) {
+            emit(sourceTrack, sourceCommand, sourceName, midiChannel, midiTick, ShortMessage.CONTROL_CHANGE, controller,
+                    clamp(0, 127, value));
         }
 
         private boolean sameValue(Integer previous, int current) {
