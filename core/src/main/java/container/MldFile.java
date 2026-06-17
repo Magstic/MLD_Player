@@ -14,6 +14,7 @@ public final class MldFile {
     public final int trackCount;
     public final int noteExtraBytes;
     public final int exstSize;
+    public final List<Long> cuePointOffsets;
     public final List<TopLevelChunk> topLevelChunks;
     public final List<InfoChunk> infoChunks;
     public final List<TrackChunk> tracks;
@@ -28,6 +29,7 @@ public final class MldFile {
             int trackCount,
             int noteExtraBytes,
             int exstSize,
+            List<Long> cuePointOffsets,
             List<TopLevelChunk> topLevelChunks,
             List<InfoChunk> infoChunks,
             List<TrackChunk> tracks) {
@@ -40,6 +42,7 @@ public final class MldFile {
         this.trackCount = trackCount;
         this.noteExtraBytes = noteExtraBytes;
         this.exstSize = exstSize;
+        this.cuePointOffsets = Collections.unmodifiableList(new ArrayList<Long>(cuePointOffsets));
         this.topLevelChunks = Collections.unmodifiableList(new ArrayList<TopLevelChunk>(topLevelChunks));
         this.infoChunks = Collections.unmodifiableList(new ArrayList<InfoChunk>(infoChunks));
         this.tracks = Collections.unmodifiableList(new ArrayList<TrackChunk>(tracks));
