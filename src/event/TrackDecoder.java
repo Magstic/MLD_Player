@@ -164,8 +164,20 @@ public final class TrackDecoder {
         switch (command) {
             case 0xB0:
                 return "master_volume";
+            case 0xB1:
+                return "master_balance";
+            case 0xB3:
+                return "master_tuning";
             case 0xBA:
                 return "patch_mode";
+            case 0xBC:
+                return "relative_tempo";
+            case 0xBD:
+                return "master_volume";
+            case 0xBE:
+                return "global_stop";
+            case 0xBF:
+                return "session_reset";
             case 0xC0:
                 return "tempo_tb_6";
             case 0xC1:

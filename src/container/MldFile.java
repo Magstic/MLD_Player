@@ -5,16 +5,19 @@ import java.util.Vector;
 public final class MldFile {
     public final int noteExtraBytes;
     public final int exstSize;
+    public final Vector cuePointOffsets;
     private final Vector infoChunks;
     public final Vector tracks;
 
     public MldFile(
             int noteExtraBytes,
             int exstSize,
+            Vector cuePointOffsets,
             Vector infoChunks,
             Vector tracks) {
         this.noteExtraBytes = noteExtraBytes;
         this.exstSize = exstSize;
+        this.cuePointOffsets = copyVector(cuePointOffsets);
         this.infoChunks = copyVector(infoChunks);
         this.tracks = copyVector(tracks);
     }

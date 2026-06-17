@@ -72,6 +72,7 @@ Recognized top-level chunk ids:
 - `date`
 - `note`
 - `exst`
+- `cuep`
 - `thrd`
 - `ainf`
 - `adat`
@@ -125,6 +126,19 @@ verified newer desktop parser has no dedicated storage path for it.
 - `0x7F 00` consumes one packed selector byte plus `exst` extension bytes
 - `0x7F 01` skips `1 + exst` bytes total and currently uses only the first
   packed selector byte
+
+### `cuep`
+
+- cue-point start table for track chunks
+- uses the ordinary top-level `be16` framing
+- payload contains one big-endian 32-bit start-point offset per declared track
+- entry order follows the declared track order
+- `0xFFFFFFFF` means that the corresponding track is inactive during cue-point
+  playback
+- cue-point offsets are positions inside track event streams
+- cue-point offsets are not tempo points and are not raw ticks
+- ordinary full playback does not require `cuep`; in that mode every track event
+  stream begins at offset `0`
 
 ### `titl`, `copy`, `prot`, `auth`
 
@@ -216,6 +230,16 @@ Special status families:
 
 All other established ordinary events are note-family events.
 
+Ordinary full-playback start model:
+
+- each `trac` event stream starts at byte offset `0`
+- each track's raw timeline starts at raw tick `0`
+- the first event's delta advances from that origin
+- tracks are aligned by their accumulated raw ticks, not by top-level chunk
+  order alone
+- `cuep` only supplies alternate per-track start offsets for cue-point
+  playback; it is not part of the ordinary full-playback timeline
+
 ## Delta and Timing
 
 Default delta is one byte.
@@ -229,10 +253,21 @@ Tempo / timebase commands:
 
 - `0xC0..0xC6` -> `6, 12, 24, 48, 96, 192, 384`
 - `0xC8..0xCE` -> `15, 30, 60, 120, 240, 480, 960`
+- `0xC7` and `0xCF` are reserved / invalid timebase selectors
 
 Timing scale:
 
 - `15360000 / timebase / tempo`
+
+Live tempo and reset controls:
+
+- the default tempo state is `120 BPM / timebase 48`
+- ordinary timebase commands update the active timebase and carry the active
+  tempo value
+- `0xBC` applies a signed 8-bit relative adjustment to the active tempo
+- relative tempo is clamped to `20..255`
+- `0xBC` does not change the active timebase
+- `0xBF` restores the default tempo state `120 BPM / timebase 48`
 
 ## Ordinary Note Events
 
@@ -290,7 +325,13 @@ If `command >= 0xF0`, the layout is:
 Established ordinary-system commands:
 
 - `0xB0`: master volume
+- `0xB1`: master balance / pan
+- `0xB3`: master tuning
 - `0xBA`: patch / mode selector
+- `0xBC`: relative tempo adjustment
+- `0xBD`: master volume
+- `0xBE`: global forced stop
+- `0xBF`: session reset
 - `0xC0..0xCE`: tempo / timebase
 - `0xD0`: cue / section marker
 - `0xDC`: extended delta for the next event
@@ -311,6 +352,21 @@ Established ordinary-system commands:
 - `0xEA`: modulation-like control
 
 `0xFF` with `command >= 0xF0` is the machine-dependent envelope.
+
+Global melody-control semantics:
+
+- `0xB0` and `0xBD` are both established master-volume forms
+- `0xB1` is a master balance / pan form
+- `0xB3` is a master tuning form
+- `0xBC` updates tempo by signed relative delta and keeps the current timebase
+- `0xBE` is accepted as global forced stop only when its value byte is `0`
+- global forced stop ends currently sounding ordinary notes immediately
+- `0xBF` is a session reset
+- session reset ends currently sounding ordinary notes, restores ordinary
+  channel defaults, restores voice-to-channel defaults, and restores the
+  default tempo state
+- `0xD0`, `0xDE`, and `0xDF` are timeline markers / no-op controls and do not
+  start ordinary notes
 
 ## Ordinary Channel State
 

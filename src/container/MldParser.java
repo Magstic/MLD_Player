@@ -18,10 +18,12 @@ public final class MldParser {
 
     public MldFile parse(byte[] data) throws IOException {
         int offset;
+        int trackCount;
         int noteExtraBytes = 0;
         int exstSize = 0;
         boolean noteSeen = false;
         boolean exstSeen = false;
+        Vector cuePointOffsets = new Vector();
         Vector infoChunks = new Vector();
         Vector tracks = new Vector();
 
@@ -35,6 +37,7 @@ public final class MldParser {
         }
 
         offset = 13;
+        trackCount = data[12] & 0xFF;
         while (offset < data.length) {
             String chunkId;
             ChunkSpec spec;
@@ -90,6 +93,8 @@ public final class MldParser {
                     exstSize = readBe16(payload, 0);
                     exstSeen = true;
                 }
+            } else if ("cuep".equals(chunkId)) {
+                cuePointOffsets = parseCuePointOffsets(payload, trackCount);
             }
 
             if (isInfoChunkId(chunkId)) {
@@ -104,6 +109,7 @@ public final class MldParser {
         return new MldFile(
                 noteExtraBytes,
                 exstSize,
+                cuePointOffsets,
                 infoChunks,
                 tracks);
     }
@@ -117,6 +123,9 @@ public final class MldParser {
         }
         if ("trac".equals(chunkId)) {
             return new ChunkSpec(4);
+        }
+        if ("cuep".equals(chunkId)) {
+            return new ChunkSpec(2);
         }
         if (isTopLevelBe16ResourceChunkId(chunkId)) {
             return new ChunkSpec(2);
@@ -156,6 +165,18 @@ public final class MldParser {
                 | ((long) (data[offset + 1] & 0xFF) << 16)
                 | ((long) (data[offset + 2] & 0xFF) << 8)
                 | ((long) (data[offset + 3] & 0xFF));
+    }
+
+    private static Vector parseCuePointOffsets(byte[] payload, int trackCount) throws IOException {
+        int i;
+        Vector offsets = new Vector();
+        if (payload.length != trackCount * 4) {
+            throw new IOException("Top-level cuep chunk must contain one 32-bit offset per parsed track");
+        }
+        for (i = 0; i < trackCount; i++) {
+            offsets.addElement(new Long(readBe32(payload, i * 4)));
+        }
+        return offsets;
     }
 
     private static String decodeAscii(byte[] data, int offset, int length) throws IOException {
