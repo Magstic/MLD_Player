@@ -1,27 +1,20 @@
 # MLD (MFi) Player
 
-## Info
-
-MLD Player, plays MLD melody via MIDI stream.
+MLD Player, plays MLD(MFi) melody via MIDI stream.
 
 ---
 
-## Item
+## Overview
 
-Currently supports MLD melody playback only — sound effects are not supported.
+MLD (MFi) is NTT Docomo's ringtone format.
 
-If you want to add SFX support, see `src_test`, where the abandoned SFX branch lives.
+MLD Player uses MIDI to play MLD melodies. Its final sound depends on the General MIDI sound set or SoundFont provided by the host environment.
 
-| Item | Description |
-|------|-------------|
-| Parse | `melo` container — all top-level chunks, per-track event streams |
-| Decode | Full ordinary-track state machine, resource commands, loop, meta-events |
-| Normalize | MD event normalization — machine-dependent sub-family classification |
-| Compile | 64 logical channels, voice-map routing, PSMPlayer patch projection, tempo mapping |
-| Export | SMF Type 1 MIDI (intro / loop / full), bridge JSON for PSMPlayer handoff |
-| Playback | Real-time via Java MIDI, Swing GUI + CLI |
+MFi2MIDI conversion is inherently **lossy**. As a result, this project does not attempt to emulate the original sound chips used by mobile phones.
 
----
+However, the wide range of available SF2 SoundFonts can still provide many different ways to render and enjoy MFi music.
+
+This software supports MFi1 and MFi2 Melody.
 
 ## Play
 
@@ -38,7 +31,7 @@ java -jar mld-player.jar                                 open Swing player
 
 ### GUI
 
-Double-click the JAR, or launch without arguments. Drag-and-drop MLD files onto the window.
+Double-click the JAR!
 
 ---
 
@@ -75,18 +68,19 @@ tools/         probe script
 
 - Loop uses transport-level restart, not the official parser-cursor rewind with carry-over state. Works for most BGM but differs structurally.
 - Some machine-dependent sub-families are parsed but not fully voiced.
+- MLD Player will never support sound effects, but it still maintains a branch for testing sound effects: `src_test`.
 
 ---
 
 ## Thanks
 
-**L-Garden**: Especially Mr. Scirocco, whose BGM compositions drove me to complete this project.
+**[L-Garden](https://magstic.art/2026/01/08/13/)**: Especially Mr. Scirocco, whose BGM compositions drove me to complete this project.
 
-**ChatGPT**: Carried out 100% of the reverse engineering and 99% of the code cleanup.
+**[ChatGPT 5.4](https://chatgpt.com/)**: Carried out 100% of the reverse engineering and 99% of the code cleanup.
 
-**Keitai Archive**: Preserved a massive collection of Keitai games.
+**[Keitai Archive](https://keitaiarchive.org/)**: Preserved a massive collection of Keitai games.
 
-**PSMPlayer**: Provides a relatively accurate MLD → MIDI instrument mapping.
+**[PSMPlayer](https://www.vector.co.jp/soft/win95/net/se211027.html)**: Provides a relatively accurate MLD → MIDI instrument mapping.
 
 ---
 
