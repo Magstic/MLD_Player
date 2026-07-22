@@ -8,9 +8,12 @@ import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Comparator;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 
 import javax.sound.midi.InvalidMidiDataException;
 import javax.sound.midi.MetaMessage;
@@ -22,16 +25,12 @@ import javax.sound.midi.Track;
 
 import container.InfoChunk;
 import container.MldFile;
-import container.MldParser;
 import container.TopLevelChunk;
 import event.TrackDecodeResult;
-import event.TrackDecoder;
 import normalize.MdNormalizedEvent;
-import normalize.MdNormalizationResult;
-import normalize.MdNormalizer;
 import playback.PlaybackSequenceBuilder;
+import timeline.MldTimelineLoader;
 import timeline.PlaybackTimeline;
-import timeline.TimelineCompiler;
 import util.JsonSink;
 
 public final class MidiBridgeExporter {
@@ -52,15 +51,10 @@ public final class MidiBridgeExporter {
 
         if (hasExportableMidi(timeline)) {
             if (timeline.loopInfo.hasLoop) {
-                PlaybackTimeline rebuiltTimeline = rebuildTimeline(inputPath);
-                if (hasExportableMidi(rebuiltTimeline)) {
-                    PlaybackSequenceBuilder.BuiltSequence fullSequence =
-                            new PlaybackSequenceBuilder().build(rebuiltTimeline, 0);
-                    MidiSystem.write(fullSequence.sequence, 1, fullMidiPath.toFile());
-                    actualFullMidiPath = fullMidiPath;
-                } else {
-                    Files.deleteIfExists(fullMidiPath);
-                }
+                PlaybackSequenceBuilder.BuiltSequence fullSequence =
+                        new PlaybackSequenceBuilder().build(timeline, 0);
+                MidiSystem.write(fullSequence.sequence, 1, fullMidiPath.toFile());
+                actualFullMidiPath = fullMidiPath;
 
                 long introEnd = Math.max(1L, timeline.loopInfo.loopStartMidiTick);
                 writeSegment(timeline, 0L, introEnd, false, "Intro", introPath);
@@ -97,32 +91,94 @@ public final class MidiBridgeExporter {
         return new BridgeArtifacts(actualPrimaryMidiPath, actualLoopPath, actualFullMidiPath, bridgeJsonPath);
     }
 
+    public BatchArtifacts exportBatch(List<Path> inputPaths, Path selectedDirectory) throws IOException {
+        if (selectedDirectory == null) {
+            throw new IllegalArgumentException("Export directory is required.");
+        }
+        Path outputDir = selectedDirectory.toAbsolutePath().normalize().resolve("MFi2MID");
+        Files.createDirectories(outputDir);
+        List<String> failures = new ArrayList<String>();
+        Set<String> usedStems = new HashSet<String>();
+        int exportedCount = 0;
+
+        List<Path> paths = inputPaths == null ? Collections.<Path>emptyList() : inputPaths;
+        for (Path inputPath : paths) {
+            if (inputPath == null || inputPath.getFileName() == null) {
+                failures.add("(invalid path)");
+                continue;
+            }
+
+            String baseStem = fileStem(inputPath);
+            String outputStem = baseStem;
+            int suffix = 2;
+            while (usedStems.contains(outputStem.toLowerCase(Locale.ROOT))
+                    || Files.exists(outputDir.resolve(outputStem + ".mid"))
+                    || Files.exists(outputDir.resolve(outputStem))) {
+                outputStem = baseStem + " (" + suffix++ + ")";
+            }
+            usedStems.add(outputStem.toLowerCase(Locale.ROOT));
+
+            Path itemOutput = null;
+            boolean itemOutputCreated = false;
+            try {
+                PlaybackTimeline timeline = MldTimelineLoader.load(inputPath);
+                if (!hasExportableMidi(timeline)) {
+                    failures.add(inputPath.getFileName() + ": no ordinary notes");
+                    continue;
+                }
+                if (timeline.loopInfo.hasLoop) {
+                    itemOutput = outputDir.resolve(outputStem);
+                    Files.createDirectory(itemOutput);
+                    itemOutputCreated = true;
+                    export(timeline, inputPath, itemOutput);
+                } else {
+                    itemOutput = outputDir.resolve(outputStem + ".mid");
+                    Files.createFile(itemOutput);
+                    itemOutputCreated = true;
+                    writeSegment(
+                            timeline,
+                            0L,
+                            Math.max(1L, timeline.totalMidiTicks),
+                            false,
+                            "Full",
+                            itemOutput);
+                }
+                exportedCount++;
+            } catch (IOException | InvalidMidiDataException e) {
+                if (itemOutputCreated) {
+                    try {
+                        if (Files.isDirectory(itemOutput)) {
+                            Files.deleteIfExists(itemOutput.resolve(midiFileName(inputPath)));
+                            Files.deleteIfExists(itemOutput.resolve("intro.mid"));
+                            Files.deleteIfExists(itemOutput.resolve("loop.mid"));
+                            Files.deleteIfExists(itemOutput.resolve("full.mid"));
+                            Files.deleteIfExists(itemOutput.resolve("bridge.json"));
+                        }
+                        Files.deleteIfExists(itemOutput);
+                    } catch (IOException cleanupFailure) {
+                        e.addSuppressed(cleanupFailure);
+                    }
+                }
+                String message = e.getMessage();
+                failures.add(inputPath.getFileName() + ": "
+                        + (message == null || message.trim().isEmpty() ? e.getClass().getSimpleName() : message));
+            }
+        }
+        return new BatchArtifacts(outputDir, exportedCount, failures);
+    }
+
     private boolean hasExportableMidi(PlaybackTimeline timeline) {
         return timeline != null && !timeline.notes.isEmpty();
     }
 
-    private PlaybackTimeline rebuildTimeline(Path inputPath) throws IOException {
-        MldParser parser = new MldParser();
-        MldFile file = parser.parse(inputPath);
-
-        TrackDecoder decoder = new TrackDecoder();
-        List<TrackDecodeResult> decodedTracks = new ArrayList<TrackDecodeResult>();
-        for (int i = 0; i < file.tracks.size(); i++) {
-            decodedTracks.add(decoder.decode(file, file.tracks.get(i)));
-        }
-
-        MdNormalizer mdNormalizer = new MdNormalizer();
-        MdNormalizationResult mdNormalization = mdNormalizer.normalize(decodedTracks);
-
-        TimelineCompiler compiler = new TimelineCompiler();
-        return compiler.compile(file, decodedTracks, mdNormalization);
+    private String midiFileName(Path inputPath) {
+        return fileStem(inputPath) + ".mid";
     }
 
-    private String midiFileName(Path inputPath) {
+    private String fileStem(Path inputPath) {
         String fileName = inputPath.getFileName().toString();
         int dot = fileName.lastIndexOf('.');
-        String stem = dot > 0 ? fileName.substring(0, dot) : fileName;
-        return stem + ".mid";
+        return dot > 0 ? fileName.substring(0, dot) : fileName;
     }
 
     private void writeSegment(
@@ -990,6 +1046,18 @@ public final class MidiBridgeExporter {
             this.loopMidiPath = loopMidiPath;
             this.fullMidiPath = fullMidiPath;
             this.bridgeJsonPath = bridgeJsonPath;
+        }
+    }
+
+    public static final class BatchArtifacts {
+        public final Path outputDir;
+        public final int exportedCount;
+        public final List<String> failures;
+
+        public BatchArtifacts(Path outputDir, int exportedCount, List<String> failures) {
+            this.outputDir = outputDir;
+            this.exportedCount = exportedCount;
+            this.failures = Collections.unmodifiableList(new ArrayList<String>(failures));
         }
     }
 }

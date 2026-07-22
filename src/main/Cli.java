@@ -12,15 +12,10 @@ import bridge.mld.MidiToMldConverter;
 import bridge.mld.MldContainerWriter;
 import bridge.midi.MidiBridgeExporter;
 import container.MldFile;
-import container.MldParser;
-import event.TrackDecodeResult;
-import event.TrackDecoder;
-import normalize.MdNormalizationResult;
-import normalize.MdNormalizer;
 import playback.JavaMidiPlayer;
 import playback.PlaybackSequenceBuilder;
+import timeline.MldTimelineLoader;
 import timeline.PlaybackTimeline;
-import timeline.TimelineCompiler;
 
 public final class Cli {
     private static final String BOX_BORDER = "************************************************************";
@@ -51,7 +46,7 @@ public final class Cli {
             return;
         }
 
-        PlaybackTimeline timeline = buildTimeline(inputPath);
+        PlaybackTimeline timeline = MldTimelineLoader.load(inputPath);
 
         if (outputDir != null) {
             MidiBridgeExporter exporter = new MidiBridgeExporter();
@@ -74,7 +69,7 @@ public final class Cli {
         GeneratedMldSong generated = new MidiToMldConverter().convert(imported);
         new MldContainerWriter().writeToPath(generated, outputPath);
 
-        PlaybackTimeline validatedTimeline = buildTimeline(outputPath);
+        PlaybackTimeline validatedTimeline = MldTimelineLoader.load(outputPath);
         List<String> warnings = new ArrayList<String>();
         warnings.addAll(imported.warnings);
         warnings.addAll(generated.warnings);
@@ -100,23 +95,6 @@ public final class Cli {
         if (!warnings.isEmpty()) {
             System.out.print(renderWarnings(warnings));
         }
-    }
-
-    static PlaybackTimeline buildTimeline(Path inputPath) throws Exception {
-        MldParser parser = new MldParser();
-        MldFile file = parser.parse(inputPath);
-
-        TrackDecoder decoder = new TrackDecoder();
-        List<TrackDecodeResult> decodedTracks = new ArrayList<TrackDecodeResult>();
-        for (int i = 0; i < file.tracks.size(); i++) {
-            decodedTracks.add(decoder.decode(file, file.tracks.get(i)));
-        }
-
-        MdNormalizer mdNormalizer = new MdNormalizer();
-        MdNormalizationResult mdNormalization = mdNormalizer.normalize(decodedTracks);
-
-        TimelineCompiler compiler = new TimelineCompiler();
-        return compiler.compile(file, decodedTracks, mdNormalization);
     }
 
     static void playTimeline(PlaybackTimeline timeline, int loopCount) throws Exception {

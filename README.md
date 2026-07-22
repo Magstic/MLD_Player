@@ -18,7 +18,7 @@ This software supports MFi1 and MFi2 Melody.
 
 ## Play
 
-Java 8
+Java 8, and Double-click the JAR!
 
 ### CLI
 
@@ -26,18 +26,19 @@ Java 8
 java -jar mld-player.jar <file.mld>
 java -jar mld-player.jar <file.mld> --output <dir>       export MIDI
 java -jar mld-player.jar <file.mld> --loop [n|infinite]  override loop count
-java -jar mld-player.jar                                 open Swing player
 ```
 
-### GUI
+### SoundFonts
 
-Double-click the JAR!
+This software supports customizing SF2 using:
+- [VirtualMIDISynth](https://coolsoft.altervista.org/en/virtualmidisynth)
+- [FluidSynth](https://www.fluidsynth.org/)
 
 ---
 
 ## Build
 
-Apache Ant
+[Apache Ant](https://ant.apache.org/)
 
 ```bash
 ant
