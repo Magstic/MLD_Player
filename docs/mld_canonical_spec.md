@@ -8,9 +8,8 @@
 
 ## Scope
 
-This document defines the established `melo` container grammar, ordinary track
-event model, live `0x7F` resource family, and branch-bounded
-machine-dependent families.
+This document defines the `melo` container grammar, ordinary track event model,
+live `0x7F` resource family, and branch-specific machine-dependent families.
 
 ## Branches
 
@@ -21,17 +20,17 @@ Three behaviorally relevant branches exist:
   - owns raw selector families `71/01 10/11/12/40/41/B0/B1/B2`
 - `layered-normal`
   - used by `lib003`
-  - owns the newer parser, live resource model, and normal-synth subtype rules
+  - provides the layered parser, live resource model, and normal-synth subtype rules
 - `layered-ft`
   - used by `lib003ft`
   - shares the same outer parser and rule blob as `layered-normal`
   - diverges at the synth backend protocol
 
-Unsupported or branch-dead machine-dependent families remain valid grammar.
+Parser-valid machine-dependent families may have no runtime action in a branch.
 
 ## Container
 
-All established files use the `melo` container.
+The container signature is `melo`.
 
 Fixed header:
 
@@ -46,7 +45,7 @@ Fixed header:
 
 ## Top-Level Chunks
 
-Verified top-level framing split in the newer desktop parser:
+`layered-normal` and `layered-ft` use the following top-level framing:
 
 - ordinary info chunks plus top-level `thrd` and `ainf` use:
   - `chunk_id[4]`
@@ -78,20 +77,20 @@ Recognized top-level chunk ids:
 - `adat`
 - `trac`
 
-`supt` can appear on disk with the ordinary top-level `be16` framing, but the
-verified newer desktop parser has no dedicated storage path for it.
+`supt` can appear on disk with the ordinary top-level `be16` framing.
+The layered parser consumes its payload and stores no dedicated metadata object.
 
 ## Top-Level Chunk Semantics
 
 - for `vers`, `sorc`, `note`, `exst`, `date`, `thrd`, and `ainf`, only the
   first accepted top-level chunk of each kind is kept
-- later duplicates remain valid grammar but are skipped without overwriting the
+- later duplicates remain valid grammar; the parser skips them and preserves the
   first accepted state
 
 ### `vers`
 
 - ASCII text
-- accepted parser windows:
+- accepted version windows:
   - `0201/0301` -> `2..3`
   - `0201/0301/0401` -> `2..4`
   - `0401` -> `4..4`
@@ -108,13 +107,11 @@ verified newer desktop parser has no dedicated storage path for it.
 - top-level payload length is exactly `2`
 - only the first accepted top-level `note` chunk is kept
 - later duplicate `note` chunks are skipped without overwriting the first value
-- `note = 0x0001` means ordinary note layout is:
-  - `delta`
-  - `status`
-  - `gate`
-  - `attr`
-- if `note > 1`, the first extra byte is interpreted and the remaining bytes
-  are reserved / skipped
+- `note = N` is the number of extra bytes following the ordinary note gate byte
+- `note = 0` is valid and yields `delta, status, gate` with no attribute byte
+- `note > 0` yields `delta, status, gate, extra[0..N-1]`
+- only `extra[0]` is interpreted as the ordinary note attribute; any remaining
+  extra bytes are reserved / skipped
 
 ### `exst`
 
@@ -122,10 +119,8 @@ verified newer desktop parser has no dedicated storage path for it.
 - top-level payload length is exactly `2`
 - only the first accepted top-level `exst` chunk is kept
 - later duplicate `exst` chunks are skipped without overwriting the first value
-- it does not belong to the ordinary `0xFF` system-event family
 - `0x7F 00` consumes one packed selector byte plus `exst` extension bytes
-- `0x7F 01` skips `1 + exst` bytes total and currently uses only the first
-  packed selector byte
+- `0x7F 01` consumes `1 + exst` bytes total and uses the first packed selector byte
 
 ### `cuep`
 
@@ -135,17 +130,14 @@ verified newer desktop parser has no dedicated storage path for it.
 - entry order follows the declared track order
 - `0xFFFFFFFF` means that the corresponding track is inactive during cue-point
   playback
-- cue-point offsets are positions inside track event streams
-- cue-point offsets are not tempo points and are not raw ticks
-- ordinary full playback does not require `cuep`; in that mode every track event
-  stream begins at offset `0`
+- cue-point offsets are byte positions inside track event streams
+- ordinary full playback begins every track event stream at byte offset `0`
 
 ### `titl`, `copy`, `prot`, `auth`
 
 - metadata / tool / provider strings
-- copied into dedicated backend-owned `0x100`-byte text buffers
-- unlike `vers`, `sorc`, `note`, `exst`, `date`, `thrd`, and `ainf`, these
-  chunks have no parser-side first-write guard
+- copied into dedicated `0x100`-byte metadata buffers
+- every occurrence copies into the same metadata buffer
 - later duplicates overwrite the previously copied text
 
 ### `date`
@@ -158,8 +150,7 @@ verified newer desktop parser has no dedicated storage path for it.
 
 - auxiliary tool string when present on disk
 - uses the ordinary top-level `be16` framing
-- not copied into the newer desktop parser's dedicated metadata side object
-- not decode-critical in the verified desktop-library line
+- the layered parser consumes the payload and stores no dedicated metadata object
 
 ### `thrd`
 
@@ -177,28 +168,26 @@ verified newer desktop parser has no dedicated storage path for it.
 
 ### `ainf`
 
-- top-level resource-count / index declaration for the newer desktop parser
+- top-level resource-count / index declaration for layered branches
 - stays in the `be16` top-level group
 - only the first accepted top-level `ainf` chunk is applied
-- if byte `0` has bit `0x40` set, the newer-parser active `adat` table is
-  rejected
+- byte `0` bit `0x40` disables the active `adat` table
 - otherwise the low 6 bits of byte `0` define the active top-level `adat`
   count
 
 ### `adat`
 
-- top-level resource payload family for the newer desktop parser
+- top-level resource payload family for layered branches
 - parsed later through its own `be32` chunk table
 
 ### `adpm`
 
-- not a recognized top-level chunk in the newer desktop parser
-- current verified usage is as a selector-local subchunk inside legacy `adat`
-  selector bodies
+- excluded from the layered top-level chunk table
+- used as a selector-local subchunk inside legacy `adat` selector bodies
 
 ### Selector `0x81` / Type `0x8001`
 
-Established on-disk contract:
+On-disk contract:
 
 - selector `0x81` feeds the audio-side `0x8001` family
 - accepted input window:
@@ -228,17 +217,15 @@ Special status families:
 - `0x7F`: live resource-control family
 - `0xFF`: system / machine-dependent family
 
-All other established ordinary events are note-family events.
+All remaining ordinary status values are note-family events.
 
 Ordinary full-playback start model:
 
 - each `trac` event stream starts at byte offset `0`
 - each track's raw timeline starts at raw tick `0`
 - the first event's delta advances from that origin
-- tracks are aligned by their accumulated raw ticks, not by top-level chunk
-  order alone
-- `cuep` only supplies alternate per-track start offsets for cue-point
-  playback; it is not part of the ordinary full-playback timeline
+- tracks align by accumulated raw ticks
+- `cuep` supplies alternate per-track start offsets for cue-point playback
 
 ## Delta and Timing
 
@@ -266,146 +253,187 @@ Live tempo and reset controls:
   `max(unsigned(value), 20)`
 - `0xBC` applies `unsigned(value) - 0x40` to the active tempo
 - relative tempo is clamped to `20..255`
-- `0xBC` does not change the active timebase
+- `0xBC` preserves the active timebase
 - `0xBF` restores tempo to `125 BPM` and preserves the active timebase
 
 ## Ordinary Note Events
 
-Under `note = 0x0001`, ordinary note layout is:
+Ordinary-note discriminator:
 
-- `delta`
-- `status`
-- `gate`
-- `attr`
+- `(status & 0x3F) != 0x3F`
+- special-envelope low-six-bit sentinel: `0x3F`
+- special-envelope status classes: `0x3F`, `0xBF`, `0x7F`, `0xFF`
+- ordinary pitch field: `0..62`
 
-Decoded fields:
+For top-level `note = N`:
 
+- layout: `delta, status, gate, extra[N]`
 - `voice = status >> 6`
 - `pitch = status & 0x3F`
 - `gate = gate_byte`
-- `velocity = attr >> 2`
-- `octave_shift = attr & 0x03`
+- `N = 0`: velocity field `63`, octave index `0`
+- `N > 0`: velocity field `extra[0] >> 2`, octave index `extra[0] & 3`
+- `extra[1..N-1]`: reserved bytes, fully consumed
 
-Octave-shift table:
+Octave table:
 
 - `0 -> 0`
 - `1 -> +12`
 - `2 -> -24`
 - `3 -> -12`
 
-Gate semantics:
+Native note state:
 
-- `gate` is the live note-off scheduling delay
-- repeated same-note events on the same resolved live channel refresh the
-  pending gate instead of creating overlapping identical voices
-- note-off queue expiry wins ties against same-tick track-event processing
-- actual sounding pitch depends on channel mode:
-  - mode `1` -> `35 + pitch + octave_table`
-  - other ordinary modes -> `45 + pitch + octave_table`
+- mode `1` pitch base: `35`
+- modes `0,2..7` pitch base: `45`
+- native note: `base + pitch + octave_offset`
+- backend velocity: `2 * velocity_field`
+- active-note key: `(resolved_channel, native_note)`
+
+Gate scheduler:
+
+- raw expiry tick: `raw_start + gate`
+- same-key event before expiry: gate refresh
+- refresh retains original sounding state and velocity
+- expiry at raw tick `T` precedes track-event dispatch at `T`
+- `gate = 0` permits same-tick expiry
+
+Patch-helper suppression state:
+
+- initial `noteOnSuppressed = 0`
+- helper result for mode `0/1`: `noteOnSuppressed = 0`
+- helper result for mode `2..7`: `noteOnSuppressed = 1`
+- `0xE0`: helper call on every accepted event
+- `0xE1`: helper call when current mode equals `1`
+- `0xBA`: helper call when new mode equals `1`
+- `0xBA` with mode `0,2..7`: suppression flag retained
+- active gate insertion precedes the suppression branch
+- suppressed note start creates a silent active gate node
+
+`lib001`, `lib002`, `lib003`, `lib003ft`, and `lib004` share these ordinary-note rules.
 
 ## Ordinary System Events
 
-For `0xFF`, the next byte is a command byte.
+### `0xFF` framing
 
-If `command < 0xF0`, the layout is:
+After `delta, 0xFF`, one command byte follows.
 
-- `delta`
-- `0xFF`
-- `command`
-- `value`
+| Command range | Encoding after command | Dispatch |
+|---|---|---|
+| `00..7F` | `1 + exst` body bytes | short special envelope |
+| `80..EF` | one value byte | ordinary-system dispatcher |
+| `F0..FE` | `payload_length_be16, payload` | passive long envelope |
+| `FF` | `payload_length_be16, payload` | machine-dependent dispatcher |
 
-If `command >= 0xF0`, the layout is:
+Every `80..EF` command consumes its value byte, including commands with an empty handler.
 
-- `delta`
-- `0xFF`
-- `command`
-- `payload_length_be16`
-- `payload`
+### Global and timeline commands
 
-Established ordinary-system commands:
+| Command | Native rule |
+|---|---|
+| `B0` | track `0`, value `< 0x80`; absolute master volume; initial cache `100` |
+| `B1` | track `0`, value `< 0x80`; master balance backend control |
+| `B2..B9` | empty handler |
+| `BA` | track `0`, value `< 0x80`; channel=`(value>>3)&0x0F`, mode=`value&7` |
+| `BB` | empty handler |
+| `BC` | track `0`, value `< 0x80`; relative tempo; clamp `20..255` |
+| `BD` | track `0`, value `< 0x80`; `masterVolume=clamp(0,127,masterVolume+value-0x40)` |
+| `BE` | track `0`, value `0`; global forced-stop backend path |
+| `BF` | track `0`, any value; session reset |
+| `C0..CF` | track `0`; timing table handler |
+| `D0` | track `0`, decoder runtime field `+0x2C == 1`, value `1`; sets global stop flags `+0x68/+0x9C` |
+| `D1..DB` | empty handler |
+| `DC` | stores `value<<8` as the next event's delta high byte |
+| `DD` | track `0`; four-slot loop controller |
+| `DE` | consumed no-op |
+| `DF` | marks the current track parser context done and returns immediately |
+| `EB..EF` | empty handler |
 
-- `0xB0`: master volume
-- `0xB1`: master balance / pan
-- `0xB3`: master tuning
-- `0xBA`: patch / mode selector
-- `0xBC`: relative tempo adjustment
-- `0xBD`: master volume
-- `0xBE`: global forced stop
-- `0xBF`: session reset
-- `0xC0..0xCE`: tempo / timebase
-- `0xD0`: cue / section marker
-- `0xDC`: extended delta for the next event
-- `0xDD`: loop control
-- `0xDE`: no-op
-- `0xDF`: end of track
-- `0xE0`: program selector update
-- `0xE1`: bank / family selector update
-- `0xE2`: absolute channel level
-- `0xE3`: pan
-- `0xE4`: coarse pitch component
-- `0xE5`: voice-to-channel assignment
-- `0xE6`: relative / expression-like level control
-- `0xE7`: pitch-range scaler
-- `0xE8`: fine pitch component
-- `0xE9`: cached fine-control byte with no immediate backend call in the
-  currently verified normal branch
-- `0xEA`: modulation-like control
+`BF` reset state:
 
-`0xFF` with `command >= 0xF0` is the machine-dependent envelope.
+- tempo: `125`
+- active timebase: retained
+- master volume: `100`
+- voice map: identity
+- channel mode: `0`
+- bank: `0`
+- program: `0`
+- note-on suppression/helper flag: `0`
+- pitch coarse: `32`
+- pitch fine: `32`
+- level: `63`
+- active gate/list state: reset
 
-Global melody-control semantics:
+### Channel commands `E0..EA`
 
-- `0xB0` and `0xBD` are both established master-volume forms
-- `0xB1` is a master balance / pan form
-- `0xB3` is a master tuning form
-- `0xBC` updates tempo by signed relative delta and keeps the current timebase
-- `0xBE` is accepted as global forced stop only when its value byte is `0`
-- global forced stop ends currently sounding ordinary notes immediately
-- `0xBF` is a session reset
-- session reset ends currently sounding ordinary notes, restores ordinary
-  channel defaults, restores voice-to-channel defaults, and restores the
-  default tempo state
-- `0xD0`, `0xDE`, and `0xDF` are timeline markers / no-op controls and do not
-  start ordinary notes
+Packed value fields:
 
-## Ordinary Channel State
+- source voice: `value >> 6`
+- payload: `value & 0x3F`
+- source voice resolves through the current voice map
+- resolved channels `0..15` enter backend control handlers
+- `E5` accepts destination values `0..63`
 
-Ordinary-track live state rules:
+| Command | Native state and backend action |
+|---|---|
+| `E0` | program=`low6`; patch helper runs |
+| `E1` | bank=`low6`; patch helper runs for mode `1` |
+| `E2` | level=`low6`; backend value=`2*level` |
+| `E3` | pan=`low6`; backend value=`2*pan` |
+| `E4` | pitch coarse=`low6`; immediate pitch apply using cached fine byte |
+| `E5` | selected local voice maps to logical channel `low6` |
+| `E6` | level=`clamp(0,63,level+low6-32)`; backend value=`2*level` |
+| `E7` | accepts `low6<=24`; updates synth pitch-range cache |
+| `E8` | pitch fine=`low6`; immediate pitch apply using cached coarse byte |
+| `E9` | pitch fine=`low6`; cache update only |
+| `EA` | backend control path with value `2*low6` |
 
-- `0xE5` assigns local voices to logical channels:
-  - `voice_map[local_voice] = value & 0x3F`
-- `0xE0`, `0xE1`, and `0xBA` define backend-facing `(mode, bank, program)`
-  state
-- `0xBA` values outside ordinary melodic modes can suppress ordinary note start
-- `0xE2` and `0xE6` are one level-control family
-- `0xE4`, `0xE7`, and `0xE8` are one coupled pitch-control cluster
-- `0xE9` is a cached fine-control byte
-- `0xEA` is table-driven
+Pitch apply formula for `E4/E8`:
+
+- `bend = (32*pitchCoarse + pitchFine)*8 - 256`
+- valid `E7` range is read by the pitch-apply wrapper on later `E4/E8` calls
+
+Patch-helper call sites:
+
+- `E0`: always
+- `E1`: mode `1`
+- `BA`: new mode `1`
+
+The helper owns the ordinary note-on suppression flag described in the note section.
 
 ## Loop Semantics
 
-`0xDD` is a multi-slot loop family.
+`0xDD` value layout:
 
-Bit layout:
+- slot: `(value >> 6) & 3`
+- operation: `value & 3`
+- repeat nibble on operation `1`: `(value >> 2) & 0x0F`
 
-- top 2 bits: loop slot `0..3`
-- low 2 bits: operation
-  - `0` = loop start
-  - `1` = loop end
-- on loop end, bits `2..5`: repeat count
+Operations:
 
-Repeat-count rule:
+- `0`: capture loop start time and per-track parser/scheduler cursor snapshots for slot `0..3`
+- `1`: loop end
+- `2,3`: consumed with no loop action
 
-- repeat count `0` means infinite repeat
+Repeat rule:
 
-Example:
+- nibble `0`: infinite loop
+- nibble `1..15`: that many additional passes
+- total body passes for finite loop: `repeatNibble + 1`
 
-- `FF DD 00` = slot-0 loop start
-- `FF DD 01` = slot-0 loop end with infinite repeat
+Loop rewind restores captured parser/scheduler cursors across all track contexts.
+Four loop slots can remain live independently.
+
+Zero-duration rule:
+
+- loop-end raw time equal to saved loop-start raw time marks every track parser context done
+- decoder returns immediately from the loop handler
+- equal-time track selection uses ascending track context order; lower track index wins the tie
+- track `0` zero-duration `DD` can terminate later same-tick events from higher tracks
 
 ## Live `0x7F` Resource-Control Family
 
-Playback-relevant established members:
+Playback members:
 
 - `0x7F 00`: trigger / start resource
 - `0x7F 01`: stop resource
@@ -435,7 +463,7 @@ Short-form payload layouts:
     - high 2 bits = audio bank lane
     - low 6 bits = `adat` entry index
   - total short-form body length = `1 + exst`
-  - current lifted branch only uses that first packed selector byte
+  - the first packed selector byte supplies the active selector
 - `0x7F 80`
   - one-byte compact payload
   - high 2 bits = audio bank lane
@@ -472,14 +500,14 @@ Universal real-time control subfamily:
 
 Machine-dependent payloads are branch-bounded.
 
-### Layered Newer-Parser Audio Families
+### Layered Audio Families
 
 - `71 81`: compact audio channel level
 - `71 82`: compact audio channel pan
 - `71 83`: legacy `0x8000` slot family
 - `71 84`: `0x8001` slot family
 - `71 86`: extended-rate `0x8000` slot family
-- `71 8F`: valid grammar; stub / no-op in the shipped layered-normal build
+- `71 8F`: valid grammar; no runtime action in `layered-normal`
 
 Control model:
 
@@ -503,7 +531,7 @@ In `layered-normal`, live forms are:
 - `71 12`
 - `71 93`
 
-In `layered-normal`, branch-dead forms are:
+In `layered-normal`, runtime-inactive forms are:
 
 - `71 10`
 - `71 11`
@@ -511,12 +539,12 @@ In `layered-normal`, branch-dead forms are:
 - `71 91`
 - `71 92`
 
-Established meanings:
+Meanings:
 
 - `71 12`: conditional rewrite-match installer / remover
 - `71 93`: conditional mapping-rewrite installer
 
-In `layered-ft`, established raw bridge relations are:
+In `layered-ft`, raw bridge relations are:
 
 - `71 10 / 71 11 / 71 12` -> internal `0x10 / 0x11 / 0x12`
 - `.. 92 40 ...` / `.. 92 41 ...` -> internal `0x40 / 0x41`
@@ -534,15 +562,14 @@ Recognized raw families:
 - `11 01 F0 03`
 - `11 01 F0 04`
 
-Established meanings:
+Meanings:
 
 - `11 01 F0 07`: compact audio-load family
 - `11 01 F1`: compact slot-control family
 - `31 10`: mixed second-stage dispatcher
 - `11 01 F2 07`: compact 16-channel route / mode map family
 - `11 01 F0 05` and `11 01 F0 04`: conditional mapping-rewrite installers
-- `11 01 F0 06` and `11 01 F0 03`: valid grammar, inactive in the shipped
-  desktop set
+- `11 01 F0 06` and `11 01 F0 03`: valid grammar; no runtime action in the layered branch set
 
 ### Monolithic Selector Families
 
@@ -557,7 +584,7 @@ These belong to `monolithic`:
 - `71/01 B1`
 - `71/01 B2`
 
-Established meanings:
+Meanings:
 
 - `71/01 10`: sibling programming surface over a `0..63` type-2 target bank
 - `71/01 11`: structured batch-update language over a `16`-target control

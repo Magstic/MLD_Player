@@ -8,17 +8,12 @@
 
 ## Scope
 
-This document defines the current host-MIDI bridge for `melo` ordinary-track
-playback.
+This document defines MIDI mapping for `melo` ordinary-track playback.
 
-- It describes the emitted MIDI stream, not the full native synth runtime.
-- The native ordinary tuple `(mode, bank, program) -> (kind, sub, value)` is
-  preserved as audit metadata on patch events, but it is not itself the GM
-  mapping rule.
-- `0x7F` resource events and `0xFF F0..FF` machine-dependent blocks are parsed
-  and preserved, but they do not emit sounding MIDI in the current bridge.
-- Transport-loop policy is out of scope here. This document covers one timeline
-  pass before any host playback-loop policy is applied.
+- MIDI stream construction is the primary subject.
+- Native `(mode, bank, program) -> (kind, sub, value)` data remains in decoded patch state.
+- `0x7F` resource events and `0xFF` special envelopes remain in the decoded event model.
+- Transport-loop policy applies after one compiled timeline pass.
 
 ## Time Mapping
 
@@ -32,7 +27,7 @@ playback.
   - `0xBF`: session reset with tempo restored to `125 BPM`; active timebase is preserved
 - If no tempo seed exists, a synthetic tick-`0` seed of `125 BPM / timebase 48`
   is inserted.
-- If the first observed tempo-state event starts after raw tick `0`, the native
+- If the first tempo-state event starts after raw tick `0`, the native
   default `125 BPM / timebase 48` governs the interval from raw tick `0`.
 - Raw-to-MIDI conversion is piecewise:
   - `midi_delta = raw_delta * 1920 / active_timebase`
@@ -54,9 +49,8 @@ playback.
 - `0xE5` rewrites the logical channel for one local lane:
   - source lane = `(trackIndex * 4) + part`
   - destination logical channel = `value & 0x3F`
-- Only logical channels `0..15` become sounding host MIDI.
-- Logical channels outside `0..15` remain preserved in audit state but do not
-  emit sounding MIDI.
+- Logical channels `0..15` produce MIDI output.
+- Logical channels `16..63` remain routing state and produce no MIDI output.
 
 ## Channel State Defaults
 
@@ -73,7 +67,7 @@ Each logical channel starts with:
 - `pitchRange = 2`
 - `modulation = 0`
 
-The host bridge emits tick-`0` defaults on all `16` MIDI channels:
+The MIDI bridge emits tick-`0` defaults on all `16` MIDI channels:
 
 - `CC7 = 126`
 - `CC10 = 64`
@@ -83,181 +77,198 @@ The host bridge emits tick-`0` defaults on all `16` MIDI channels:
 
 ## Ordinary Note Mapping
 
-Ordinary notes are emitted only when the current channel mode is `0` or `1`.
+Parser rules:
 
-- `0xBA` updates one logical channel's mode:
-  - logical channel = `(value >> 3) & 0x0F`
-  - mode = `value & 0x07`
-- Modes other than `0` and `1` suppress ordinary note start.
+- ordinary discriminator: `(status & 0x3F) != 0x3F`
+- special-envelope status classes: `0x3F`, `0xBF`, `0x7F`, `0xFF`
+- ordinary pitch field: `0..62`
+- `note = 0`: velocity field `63`, octave index `0`
+- `note > 0`: first extra byte supplies velocity and octave index
+- remaining extra bytes: consumed reserved bytes
 
-Pitch mapping:
+Native scheduler pitch:
 
-- ordinary melodic base note:
-  - mode `0` -> base `45`
-  - mode `1` -> base `35`
-- authoritative special logical lane -> base `35`
-- representative percussion therefore uses a `-10` GM-note correction relative
-  to the naive ordinary melodic base `45`
-- octave shift table:
-  - `0 -> 0`
-  - `1 -> +12`
-  - `2 -> -24`
-  - `3 -> -12`
-- emitted MIDI note:
-  - `clamp(0, 127, base + pitch + octaveOffset)`
+- mode `1`: base `35`
+- modes `0,2..7`: base `45`
+- native key: `(logicalChannel, base + pitch + octaveOffset)`
 
-Velocity mapping:
+MIDI presentation pitch:
 
-- with at least one extra note byte present (`note > 0`):
-  - decoded note velocity field = `(attr >> 2) & 0x3F`
-  - emitted MIDI velocity = `clamp(1, 127, 2 * ((attr >> 2) & 0x3F))`
-- without an extra note byte:
-  - emitted MIDI velocity = `126`
+- ordinary lane: native mode base
+- special lane: MIDI base `35`
+- emitted note: `clamp(0,127,midiBase + pitch + octaveOffset)`
 
-Gate mapping:
+Gate refresh always uses the native key. MIDI lane pitch adaptation stays outside native scheduler identity.
 
-- raw end tick = `rawStartTick + gate`
-- MIDI end tick = `max(midiStartTick + 1, rawToMidi(rawEndTick))`
+Octave table:
 
-Live gate-refresh rule:
+- `0 -> 0`
+- `1 -> +12`
+- `2 -> -24`
+- `3 -> -12`
 
-- active-note key = `(logicalChannel, midiNote)`
-- when the same key is triggered again before expiry:
-  - no second MIDI note-on is emitted
-  - the existing note's end tick is refreshed to the new gate target
+Velocity:
 
-Patch ordering:
+- `note > 0`: `clamp(1,127,2*((attr>>2)&0x3F))`
+- `note = 0`: `126`
 
-- before a note-on is emitted, any pending patch change for that logical
-  channel is emitted first.
+Gate:
+
+- native raw end: `rawStart + gate`
+- same native key before expiry: refresh existing gate
+- refresh retains original sounding state and velocity
+- expiry at tick `T` runs before a track event at `T`
+- native `gate=0`: same-tick expiry
+- sounding MIDI serialization: `midiEnd=max(midiStart+1,rawToMidi(rawEnd))`
+- the MIDI `+1` rule stays outside native gate state
+
+Note-on suppression state:
+
+- initial flag: clear
+- `E0` runs the native patch helper
+- `E1` runs the helper in mode `1`
+- `BA` runs the helper when the new mode equals `1`
+- helper in mode `0/1`: clear flag
+- helper in mode `2..7`: set flag
+- `BA` mode `0,2..7`: retain flag
+- set flag: create silent active gate node
+- clear flag: create sounding node and emit MIDI note-on
+
+Patch sync for a sounding note runs before MIDI note-on.
 
 ## Patch Mapping
 
-Patch state is built from ordinary `0xE0` and `0xE1`.
+Native state fields:
 
-- `0xE0` stores:
-  - `program = value & 0x3F`
-- `0xE1` stores:
-  - `bank = value & 0x3F`
+- `E0`: `program=value&0x3F`; native patch helper runs
+- `E1`: `bank=value&0x3F`; helper runs in mode `1`
+- `BA`: channel=`(value>>3)&0x0F`, mode=`value&7`; helper runs for new mode `1`
 
-Authoritative ordinary host patch word:
+MIDI patch word:
 
 - `patch12 = (program & 0x3F) | ((bank & 0x3F) << 6)`
 
-Verified low-bank special table:
+Low-bank table for `(bank & 0x3E) == 0`:
 
-- when `(bank & 0x3E) == 0`, programs `0..5` map as:
-  - `0 -> 0`
-  - `1 -> 9`
-  - `2 -> 16`
-  - `3 -> 24`
-  - `4 -> 13`
-  - `5 -> 74`
+- `0 -> 0`
+- `1 -> 9`
+- `2 -> 16`
+- `3 -> 24`
+- `4 -> 13`
+- `5 -> 74`
 
-Host MIDI patch emission:
+MIDI output:
 
-- emitted MIDI message = `Program Change`
-- emitted MIDI program = `patchWord & 0x7F`
-- if no authoritative ordinary patch is available yet, the host falls back to
-  patch `0`
-- the first ordinary note on an untouched channel can therefore emit
-  `Program Change 0` before the note-on
-- entering mode `1` through `0xBA` marks the channel patch dirty and can emit
-  the current patch immediately, subject to normal patch deduplication
-- modes other than `0` and `1` suppress patch emission
+- message: Program Change
+- program: `patchWord & 0x7F`
+- initial MIDI patch value: `0`
+- mode `1` entry can mark the current MIDI patch dirty
+- patch deduplication uses final MIDI patch state
 
-Native audit tuple:
-
-- every emitted patch event also carries:
-  - native `mode`
-  - native `bank`
-  - native `program`
-  - native `kind`
-  - native `sub`
-  - native `value`
-
-The emitted MIDI patch path intentionally remains the current PSM-derived host
-proxy. The native tuple is kept as an audit oracle, not substituted directly as
-GM output.
+Patch state records retain native mode, bank, program, kind, sub, and value.
 
 ## Ordinary Control Mapping
 
-Tempo-state events:
+### `0xFF` framing
 
-- `0xC0..0xC6` and `0xC8..0xCE` update timebase and set
-  `tempo = max(unsigned(value), 20)`, then emit conductor-track MIDI tempo meta only
-- `0xBC` updates the active tempo by `unsigned(value) - 0x40` and emits
-  conductor-track MIDI tempo meta only
-- `0xBF` restores tempo to `125 BPM`, preserves the active timebase, and also
-  performs the session reset described below
-
-State-only events:
-
-- `0xD0`, `0xDE`, and `0xDF` are timeline cue / no-op / end markers and emit no
-  sounding MIDI message
-- `0xDC` extends the next raw delta and emits no MIDI message
-- `0xDD` updates loop metadata and emits no MIDI message
-- `0xE5` rewrites the lane-to-logical-channel map and emits no MIDI message
-- `0xBA` rewrites mode and emits no direct MIDI message
-
-Mapped controls:
-
-| MLD event | State update | Emitted MIDI |
+| Command range | Parsed form | MIDI action |
 |---|---|---|
-| `0xB0` | no per-channel cache update | `CC7` on all `16` MIDI channels, value `clamp(0,127,value)` |
-| `0xB1` | no per-channel cache update | `CC10` on all `16` MIDI channels, value `clamp(0,127,value)` |
-| `0xB3` | no per-channel cache update; values outside `0x34..0x4C` are ignored | pitch bend on all `16` MIDI channels |
-| `0xBD` | no per-channel cache update | same output as `0xB0` |
-| `0xBE` | accepted as global stop only when `value == 0` | note-offs for active ordinary notes plus `CC120` All Sound Off on all `16` MIDI channels |
-| `0xBF` | session reset | note-offs for active ordinary notes, `CC120` All Sound Off, then reset defaults on all `16` MIDI channels |
-| `0xE2` | `level = value & 0x3F` | `CC7 = computePsmVolumeSync(level)`, currently `2 * level` |
-| `0xE6` | `level += (value & 0x3F) - 32`, clamp `0..63` | `CC7 = computePsmVolumeSync(level)`, currently `2 * level` |
-| `0xE3` | `pan = value & 0x3F` | `CC10 = 2 * pan` |
-| `0xE4` | `pitchCoarse = value & 0x3F` | pitch bend |
-| `0xE7` | `pitchRange = value & 0x3F` if `<= 24` | `RPN 0/0`, `Data Entry MSB = range`, `LSB = 0` |
-| `0xE8` | `pitchFine = value & 0x3F` | pitch bend |
-| `0xE9` | `pitchFine = value & 0x3F` | no MIDI message |
-| `0xEA` | `modulation = value & 0x3F` | `CC1 = 2 * modulation` |
+| `00..7F` | `1+exst` body bytes | preserve reserved envelope |
+| `80..EF` | one value byte | ordinary-system dispatch |
+| `F0..FE` | BE16 length + body | preserve reserved envelope |
+| `FF` | BE16 length + body | preserve machine-dependent event |
 
-Pitch-bend formula:
+### Global and timeline controls
 
-- `bend = clamp(0, 16383, (8 * (pitchFine + (32 * pitchCoarse))) - 256)`
+| MLD | Native acceptance/state | MIDI bridge |
+|---|---|---|
+| `B0` | track0, value `<128`; absolute master volume | CC7 all 16 channels |
+| `B1` | track0, value `<128`; master balance backend control | CC10 all 16 channels |
+| `B2..B9` | empty handler | no MIDI output |
+| `BA` | track0, value `<128`; mode update | patch/suppression state |
+| `BB` | empty handler | no MIDI output |
+| `BC` | track0, value `<128`; relative tempo | conductor tempo meta |
+| `BD` | track0, value `<128`; relative master volume from cache default `100` | CC7 all 16 channels |
+| `BE` | track0, value `0` | active-note stop + CC120 all channels |
+| `BF` | track0, any value; session reset | active-note stop + CC120 + reset defaults |
+| `C0..CF` | timing state | conductor tempo meta for valid table entries |
+| `D0` | conditional native stop trigger | no MIDI output |
+| `D1..DB` | empty handler | no MIDI output |
+| `DC` | next-delta high byte | parser state |
+| `DD` | four-slot native loop controller | one MIDI transport loop range |
+| `DE` | consumed no-op | no MIDI output |
+| `DF` | current track parser done | parser boundary |
+| `EB..EF` | empty handler | no MIDI output |
 
-Pitch-range rule:
+Master-volume state:
 
-- `0xE7` values above `24` are ignored
+- initial native cache: `100`
+- `B0`: `masterVolume=value`
+- `BD`: `masterVolume=clamp(0,127,masterVolume+value-0x40)`
+- `BF`: `masterVolume=100`
+- `B0/BD` MIDI mapping: all-channel CC7 broadcast
+- per-channel `E2/E6` CC7 can later replace that channel's broadcast value
 
-CC7 interaction rule:
+`D0` depends on the native decoder runtime field at `+0x2C` and has no MIDI mapping.
 
-- `0xB0`, `0xBD`, and `0xE2/E6` all emit host `CC7`
-- `0xB0` and `0xBD` are immediate all-channel broadcasts and do not rewrite any
-  per-channel `level` cache
-- `0xE2/E6` rewrite one logical channel's `level` cache, then emit that
-  channel's current synchronized host volume
-- later `0xE2/E6` on one channel can therefore overwrite an earlier `0xB0` /
-  `0xBD` broadcast on that channel only
-- deduplication is applied on final emitted `(midiChannel, controller, value)`
-  only; identical consecutive `CC7` writes coalesce even if their MLD sources
-  differ
+`DF` ends decoding of the current `trac` immediately. Trailing bytes in that track stay outside the decoded event list.
 
-Global stop and reset:
+### Channel controls `E0..EA`
 
-- nonzero `0xBE` values do not form an established global stop
-- accepted `0xBE` stops currently sounding ordinary notes immediately
-- accepted `0xBE` does not restore channel defaults or lane assignment defaults
-- `0xBF` stops currently sounding ordinary notes immediately
-- `0xBF` restores ordinary channel defaults, lane assignment defaults, and the
-  default tempo state
+Source voice=`value>>6`. Payload=`value&0x3F`. The current voice map resolves the logical channel.
 
-Deduplication:
+| MLD | Native state/action | MIDI bridge |
+|---|---|---|
+| `E0` | program cache + patch helper | MIDI patch update when eligible |
+| `E1` | bank cache; helper in mode1 | MIDI patch update in mode1 |
+| `E2` | absolute level | CC7 |
+| `E3` | pan | CC10 |
+| `E4` | coarse cache + pitch apply | pending pitch-range RPN, then pitch bend |
+| `E5` | voice map destination `0..63` | lane routing state |
+| `E6` | relative level | CC7 |
+| `E7` | range cache for values `0..24` | arm pending RPN output |
+| `E8` | fine cache + pitch apply | pending pitch-range RPN, then pitch bend |
+| `E9` | fine cache | no immediate MIDI output |
+| `EA` | backend control value `2*low6` | CC1 proxy |
 
-- repeated identical consecutive `CC7`, `CC10`, `CC1`, and pitch-bend values on
-  the same MIDI channel are not re-emitted
-- repeated identical consecutive host patch states are not re-emitted
+Pitch bend:
+
+- native value: `(32*pitchCoarse + pitchFine)*8 - 256`
+- MIDI value: clamp to `0..16383`
+
+Pitch range:
+
+- `E7` stores a native range cache
+- native `E4/E8` pitch-apply path reads that cache
+- the MIDI bridge emits pending RPN `0/0` immediately before the next mapped `E4/E8` pitch bend
+- MIDI RPN state persists after that write
+
+Controller deduplication uses final `(midiChannel, controller, value)` state.
+
+### `DD` loop mapping
+
+Native loop slots: `0..3`.
+
+- operation `0`: save start snapshot
+- operation `1`: end/repeat
+- repeat nibble `0`: infinite
+- repeat nibble `1..15`: additional passes
+- finite total passes: `N+1`
+- operation `2/3`: no loop action
+- a new start for one slot replaces that slot's saved start snapshot
+
+MIDI transport exposes one loop range. The bridge selects the lowest numbered
+complete slot in the linear pass. Additional complete slots remain in decoded
+loop state.
+
+Zero-duration DD behavior is compiled as a native track-event stop boundary.
+Later track events, including higher-track events at the same raw tick, are
+excluded. Active gate expiries retain their scheduled native timing under the
+timing state established at that boundary.
 
 ## Live-Mix Chase Approximation
 
-For ordinary `0xE2`, `0xE3`, and `0xE6`, the host bridge can replace one
+For ordinary `0xE2`, `0xE3`, and `0xE6`, the MIDI bridge can replace one
 immediate control step with a short chase when a note is already active on that
 MIDI channel.
 
@@ -276,16 +287,16 @@ MIDI channel.
 After note/control compilation, logical channels are remapped to final MIDI
 channels.
 
-Current bridge defaults:
+Bridge defaults:
 
-- authoritative special-lane mask is seeded with logical channel `9`
+- special-lane mask starts with logical channel `9`
 - GM drum output channel is MIDI channel `10` (`index 9`)
 - non-special active lanes are compressed left-to-right around that reserved
   drum lane
 
 Final output mapping rule:
 
-- authoritative special lane -> MIDI channel `10`
+- special lane -> MIDI channel `10`
 - remaining active ordinary lanes -> next sequential MIDI channels
 - when the drum lane is reserved, ordinary lanes skip over MIDI channel `10`
 
@@ -312,11 +323,11 @@ Within the same phase and tick:
 
 ## Non-Sounding Families
 
-The current host-MIDI bridge does not emit sounding MIDI for:
+The following families produce no sounding MIDI:
 
 - `0x7F` resource events
 - `0xFF F0..FF` machine-dependent events
 - cue / nop / end markers
 
-These families remain part of the parsed timeline and export audit surface, but
-they are outside the sounding ordinary-track MIDI bridge defined here.
+These families remain in the parsed timeline and decoded event model.
+They produce no MIDI output in this mapping layer.
