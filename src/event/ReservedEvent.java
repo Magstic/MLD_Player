@@ -1,13 +1,6 @@
 package event;
 
-/**
- * Preserved non-sounding 0x3F/0xBF control-envelope event.
- *
- * Native MFi5 decoding treats every status whose low six bits are 0x3F as a
- * control envelope. Status 0x7F and 0xFF are the live resource/system forms;
- * 0x3F and 0xBF use the same framing rules but do not enter ordinary note
- * playback.
- */
+/** Preserved special-envelope form with no ordinary playback action. */
 public final class ReservedEvent extends TrackEvent {
     public final int status;
     public final int command;

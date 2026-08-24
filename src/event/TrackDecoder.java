@@ -108,21 +108,26 @@ public final class TrackDecoder {
                 int command = payload[offset] & 0xFF;
                 offset += 1;
 
+                if (command < 0x80) {
+                    byte[] body = readSpecialEnvelopeBody(
+                            payload, track.index, status, command, false, file.exstSize, offset);
+                    offset += bodyLengthForSpecialCommand(command, file.exstSize);
+                    events.add(new ReservedEvent(
+                            track.index, eventIndex++, delta, rawTick, status, command, body, false));
+                    continue;
+                }
+
                 if (command >= 0xF0) {
-                    if (offset + 2 > payload.length) {
-                        throw new IOException("Truncated machine-dependent event in track " + track.index);
+                    byte[] body = readSpecialEnvelopeBody(
+                            payload, track.index, status, command, true, file.exstSize, offset);
+                    offset += 2 + body.length;
+                    if (command == 0xFF) {
+                        events.add(new MachineDependentEvent(track.index, eventIndex++, delta, rawTick, command, body));
+                        machineCount += 1;
+                    } else {
+                        events.add(new ReservedEvent(
+                                track.index, eventIndex++, delta, rawTick, status, command, body, true));
                     }
-
-                    int length = readBe16(payload, offset);
-                    offset += 2;
-                    if (offset + length > payload.length) {
-                        throw new IOException("Machine-dependent payload overruns track " + track.index);
-                    }
-
-                    byte[] body = Arrays.copyOfRange(payload, offset, offset + length);
-                    offset += length;
-                    events.add(new MachineDependentEvent(track.index, eventIndex++, delta, rawTick, command, body));
-                    machineCount += 1;
                     continue;
                 }
 
@@ -150,6 +155,9 @@ public final class TrackDecoder {
                         part,
                         timebase));
                 systemCount += 1;
+                if (command == 0xDF) {
+                    break;
+                }
                 continue;
             }
 
@@ -288,10 +296,9 @@ public final class TrackDecoder {
         Map<Integer, String> map = new HashMap<Integer, String>();
         map.put(0xB0, "master_volume");
         map.put(0xB1, "master_balance");
-        map.put(0xB3, "master_tuning");
         map.put(0xBA, "patch_mode");
         map.put(0xBC, "relative_tempo");
-        map.put(0xBD, "master_volume");
+        map.put(0xBD, "relative_master_volume");
         map.put(0xBE, "global_stop");
         map.put(0xBF, "session_reset");
         map.put(0xC0, "tempo_tb_6");
@@ -308,22 +315,22 @@ public final class TrackDecoder {
         map.put(0xCC, "tempo_tb_240");
         map.put(0xCD, "tempo_tb_480");
         map.put(0xCE, "tempo_tb_960");
-        map.put(0xD0, "cue_point");
+        map.put(0xD0, "conditional_stop");
         map.put(0xDC, "extended_delta");
         map.put(0xDD, "loop_point");
         map.put(0xDE, "nop");
         map.put(0xDF, "end_of_track");
         map.put(0xE0, "program_change");
         map.put(0xE1, "bank_change");
-        map.put(0xE2, "channel_volume");
+        map.put(0xE2, "channel_level");
         map.put(0xE3, "pan");
-        map.put(0xE4, "pitch_bend");
-        map.put(0xE5, "channel_assign");
-        map.put(0xE6, "expression");
-        map.put(0xE7, "pitch_bend_range");
-        map.put(0xE8, "fine_pitch_or_pcm_volume");
-        map.put(0xE9, "fine_pitch_or_pcm_pan");
-        map.put(0xEA, "modulation_depth");
+        map.put(0xE4, "pitch_coarse_apply");
+        map.put(0xE5, "voice_assign");
+        map.put(0xE6, "relative_channel_level");
+        map.put(0xE7, "pitch_range_cache");
+        map.put(0xE8, "pitch_fine_apply");
+        map.put(0xE9, "pitch_fine_cache");
+        map.put(0xEA, "backend_control_ea");
         map.put(0xFF, "machine_dependent");
         return map;
     }

@@ -28,6 +28,7 @@ public final class TimelineCompiler {
     private static final int DEFAULT_TEMPO = 125;
     private static final int MIN_TEMPO = 20;
     private static final int MAX_TEMPO = 255;
+    private static final int DEFAULT_MASTER_VOLUME = 100;
     private static final int DEFAULT_LEVEL = 63;
     private static final int DEFAULT_PAN = 32;
     private static final int DEFAULT_PITCH_COARSE = 32;
@@ -93,11 +94,12 @@ public final class TimelineCompiler {
         List<PlaybackTimeline.InitialChannelConfig> initialChannelConfigs =
                 buildInitialChannelConfigs(file, warnings, warningKeys);
 
-        List<RawTempoPoint> tempoSeeds = collectTempoSeeds(decodedTracks);
+        SystemEvent nativeDdStopEvent = findNativeZeroDurationLoopStop(decodedTracks);
+        List<RawTempoPoint> tempoSeeds = collectTempoSeeds(decodedTracks, nativeDdStopEvent);
         Collections.sort(tempoSeeds, RAW_TEMPO_COMPARATOR);
         List<PlaybackTimeline.TempoPoint> tempoPoints = buildTempoPoints(tempoSeeds, warnings);
         TempoMapper mapper = new TempoMapper(tempoPoints);
-        PlaybackTimeline.LoopInfo loopInfo = determineLoopInfo(decodedTracks, mapper, warnings);
+        PlaybackTimeline.LoopInfo loopInfo = determineLoopInfo(decodedTracks, mapper, warnings, nativeDdStopEvent);
 
         List<TrackEvent> orderedEvents = collectOrderedEvents(decodedTracks);
         List<PlaybackTimeline.CompiledNote> notes = new ArrayList<PlaybackTimeline.CompiledNote>();
@@ -109,6 +111,7 @@ public final class TimelineCompiler {
                 new ArrayList<PlaybackTimeline.UnmappedControlEvent>();
         Map<Integer, ActiveNote> activeNotes = new LinkedHashMap<Integer, ActiveNote>();
         ChannelState[] channels = createChannelStates();
+        SystemState systemState = new SystemState();
         OutputLaneTracker outputLaneTracker = OutputLaneTracker.seededFreshDefaultPlayPath();
         int[] voiceMap = createIdentityVoiceMap(Math.max(16, file.trackCount * 4));
         ControlCollector controlCollector = new ControlCollector(mappedControls);
@@ -117,6 +120,9 @@ public final class TimelineCompiler {
 
         long totalMidiTicks = 0L;
         for (TrackEvent event : orderedEvents) {
+            if (nativeDdStopEvent != null && TRACK_EVENT_COMPARATOR.compare(event, nativeDdStopEvent) > 0) {
+                break;
+            }
             // The native scheduler expires pending gates before processing any track event
             // at the same raw tick, including non-melody/reserved envelopes.
             totalMidiTicks = Math.max(totalMidiTicks, flushExpiredNotes(event.rawTick, activeNotes, notes));
@@ -153,6 +159,7 @@ public final class TimelineCompiler {
                         notes,
                         activeNotes,
                         channels,
+                        systemState,
                         outputLaneTracker,
                         voiceMap,
                         ordinaryNativeControls,
@@ -163,7 +170,10 @@ public final class TimelineCompiler {
 
         totalMidiTicks = Math.max(totalMidiTicks, flushExpiredNotes(Integer.MAX_VALUE, activeNotes, notes));
         for (TrackDecodeResult track : decodedTracks) {
-            totalMidiTicks = Math.max(totalMidiTicks, mapper.rawToMidiTick(track.totalRawTicks));
+            int effectiveTrackEnd = nativeDdStopEvent == null
+                    ? track.totalRawTicks
+                    : Math.min(track.totalRawTicks, nativeDdStopEvent.rawTick);
+            totalMidiTicks = Math.max(totalMidiTicks, mapper.rawToMidiTick(effectiveTrackEnd));
         }
         if (loopInfo.hasLoop) {
             totalMidiTicks = Math.max(totalMidiTicks, loopInfo.loopEndMidiTick);
@@ -463,16 +473,21 @@ public final class TimelineCompiler {
         return events;
     }
 
-    private List<RawTempoPoint> collectTempoSeeds(List<TrackDecodeResult> decodedTracks) {
+    private List<RawTempoPoint> collectTempoSeeds(
+            List<TrackDecodeResult> decodedTracks,
+            SystemEvent nativeDdStopEvent) {
         List<RawTempoPoint> seeds = new ArrayList<RawTempoPoint>();
         int currentTimebase = DEFAULT_TIMEBASE;
         int currentTempo = DEFAULT_TEMPO;
         for (TrackEvent event : collectOrderedEvents(decodedTracks)) {
+            if (nativeDdStopEvent != null && TRACK_EVENT_COMPARATOR.compare(event, nativeDdStopEvent) > 0) {
+                break;
+            }
             if (!(event instanceof SystemEvent)) {
                 continue;
             }
             SystemEvent systemEvent = (SystemEvent) event;
-            if (!isTempo(systemEvent) && systemEvent.command != 0xBC && systemEvent.command != 0xBF) {
+            if (!isEffectiveTempoStateEvent(systemEvent)) {
                 continue;
             }
             if (seeds.isEmpty() && systemEvent.rawTick > 0) {
@@ -541,50 +556,83 @@ public final class TimelineCompiler {
         return points;
     }
 
+    private SystemEvent findNativeZeroDurationLoopStop(List<TrackDecodeResult> decodedTracks) {
+        Integer[] activeStarts = new Integer[4];
+        for (TrackEvent event : collectOrderedEvents(decodedTracks)) {
+            if (!(event instanceof SystemEvent)) {
+                continue;
+            }
+            SystemEvent systemEvent = (SystemEvent) event;
+            if (systemEvent.command != 0xDD || systemEvent.trackIndex != 0) {
+                continue;
+            }
+            int slot = (systemEvent.value >> 6) & 0x03;
+            int operation = systemEvent.value & 0x03;
+            if (operation == 0x00) {
+                activeStarts[slot] = Integer.valueOf(systemEvent.rawTick);
+            } else if (operation == 0x01 && activeStarts[slot] != null) {
+                if (activeStarts[slot].intValue() == systemEvent.rawTick) {
+                    return systemEvent;
+                }
+                activeStarts[slot] = null;
+            }
+        }
+        return null;
+    }
+
     private PlaybackTimeline.LoopInfo determineLoopInfo(
             List<TrackDecodeResult> decodedTracks,
             TempoMapper mapper,
-            List<String> warnings) {
+            List<String> warnings,
+            SystemEvent nativeDdStopEvent) {
+        Integer[] activeStarts = new Integer[4];
         Integer[] loopStarts = new Integer[4];
         Integer[] loopEnds = new Integer[4];
         int[] repeatCounts = new int[] { 0, 0, 0, 0 };
         List<String> loopWarnings = new ArrayList<String>();
 
-        for (TrackDecodeResult track : decodedTracks) {
-            for (TrackEvent event : track.events) {
-                if (!(event instanceof SystemEvent)) {
-                    continue;
-                }
-                SystemEvent systemEvent = (SystemEvent) event;
-                if (systemEvent.command != 0xDD) {
-                    continue;
-                }
-                int slot = (systemEvent.value >> 6) & 0x03;
-                int operation = systemEvent.value & 0x03;
-                if (operation == 0x00) {
-                    if (loopStarts[slot] == null || systemEvent.rawTick < loopStarts[slot].intValue()) {
-                        loopStarts[slot] = Integer.valueOf(systemEvent.rawTick);
-                    }
-                } else if (operation == 0x01) {
-                    if (loopEnds[slot] == null || systemEvent.rawTick < loopEnds[slot].intValue()) {
-                        loopEnds[slot] = Integer.valueOf(systemEvent.rawTick);
-                        int repeat = (systemEvent.value >> 2) & 0x0F;
-                        repeatCounts[slot] = repeat == 0 ? -1 : repeat;
-                    }
-                }
+        for (TrackEvent event : collectOrderedEvents(decodedTracks)) {
+            if (nativeDdStopEvent != null && TRACK_EVENT_COMPARATOR.compare(event, nativeDdStopEvent) > 0) {
+                break;
             }
+            if (!(event instanceof SystemEvent)) {
+                continue;
+            }
+            SystemEvent systemEvent = (SystemEvent) event;
+            if (systemEvent.command != 0xDD || systemEvent.trackIndex != 0) {
+                continue;
+            }
+            int slot = (systemEvent.value >> 6) & 0x03;
+            int operation = systemEvent.value & 0x03;
+            if (operation == 0x00) {
+                activeStarts[slot] = Integer.valueOf(systemEvent.rawTick);
+                continue;
+            }
+            if (operation != 0x01 || activeStarts[slot] == null || loopEnds[slot] != null) {
+                continue;
+            }
+            loopStarts[slot] = activeStarts[slot];
+            loopEnds[slot] = Integer.valueOf(systemEvent.rawTick);
+            int repeat = (systemEvent.value >> 2) & 0x0F;
+            repeatCounts[slot] = repeat == 0 ? -1 : repeat;
+        }
+
+        if (nativeDdStopEvent != null) {
+            loopWarnings.add("Zero-duration DD loop end marks every native track parser context done at raw tick "
+                    + nativeDdStopEvent.rawTick + ".");
         }
 
         int chosenSlot = -1;
         for (int slot = 0; slot < 4; slot++) {
-            if (loopStarts[slot] != null && loopEnds[slot] != null && loopEnds[slot].intValue() > loopStarts[slot].intValue()) {
+            if (loopStarts[slot] != null && loopEnds[slot] != null
+                    && loopEnds[slot].intValue() > loopStarts[slot].intValue()) {
                 if (chosenSlot >= 0) {
-                    loopWarnings.add("Multiple loop slots detected; using the lowest numbered complete slot.");
+                    loopWarnings.add("Multiple complete DD loop slots detected; host transport uses the lowest numbered slot.");
                     break;
                 }
                 chosenSlot = slot;
             } else if ((loopStarts[slot] == null) != (loopEnds[slot] == null)) {
-                loopWarnings.add("Loop slot " + slot + " is incomplete and will be ignored.");
+                loopWarnings.add("DD loop slot " + slot + " is incomplete in the linear host pass.");
             }
         }
 
@@ -595,12 +643,6 @@ public final class TimelineCompiler {
 
         int loopStart = loopStarts[chosenSlot].intValue();
         int loopEnd = loopEnds[chosenSlot].intValue();
-        if (loopEnd <= loopStart) {
-            loopWarnings.add("Loop end does not fall after loop start; looping disabled.");
-            warnings.addAll(loopWarnings);
-            return new PlaybackTimeline.LoopInfo(false, -1, 0, -1, -1, -1L, -1L, loopWarnings);
-        }
-
         warnings.addAll(loopWarnings);
         return new PlaybackTimeline.LoopInfo(
                 true,
@@ -634,7 +676,7 @@ public final class TimelineCompiler {
         }
 
         ChannelState channel = channels[logicalChannel];
-        boolean sounding = channel.allowsOrdinaryNotes();
+        boolean sounding = channel.allowsOrdinaryNoteOn();
         if (logicalChannel >= MIDI_CHANNEL_COUNT) {
             addWarningOnce(warnings, warningKeys, "host_channel_" + logicalChannel,
                     "Skipping note mapped to logical channel " + logicalChannel
@@ -649,8 +691,8 @@ public final class TimelineCompiler {
                     "note_patch_sync",
                     midiStartTick);
         } else {
-            addWarningOnce(warnings, warningKeys, "suppressed_mode_" + logicalChannel + "_" + channel.mode,
-                    "Mode " + channel.mode + " suppresses native note-on on logical channel " + logicalChannel
+            addWarningOnce(warnings, warningKeys, "suppressed_note_on_" + logicalChannel + "_" + channel.mode,
+                    "Native patch state suppresses note-on on logical channel " + logicalChannel
                             + "; preserving its silent gate state for retrigger semantics.");
         }
 
@@ -865,6 +907,7 @@ public final class TimelineCompiler {
             List<PlaybackTimeline.CompiledNote> notes,
             Map<Integer, ActiveNote> activeNotes,
             ChannelState[] channels,
+            SystemState systemState,
             OutputLaneTracker outputLaneTracker,
             int[] voiceMap,
             List<PlaybackTimeline.OrdinaryNativeControl> ordinaryNativeControls,
@@ -877,16 +920,20 @@ public final class TimelineCompiler {
         boolean reportAsUnmapped = false;
         switch (systemEvent.command) {
             case 0xB0:
-                controlCollector.emitMasterVolume(systemEvent.trackIndex, systemEvent.command, systemEvent.name, midiTick,
-                        clamp(0, 127, systemEvent.value));
+                if (acceptTrackZero7Bit(systemEvent)) {
+                    systemState.masterVolume = systemEvent.value;
+                    controlCollector.emitMasterVolume(systemEvent.trackIndex, systemEvent.command, systemEvent.name, midiTick,
+                            systemState.masterVolume);
+                }
                 break;
             case 0xB1:
-                controlCollector.emitMasterPan(systemEvent.trackIndex, systemEvent.command, systemEvent.name, midiTick,
-                        clamp(0, 127, systemEvent.value));
+                if (acceptTrackZero7Bit(systemEvent)) {
+                    controlCollector.emitMasterPan(systemEvent.trackIndex, systemEvent.command, systemEvent.name, midiTick,
+                            systemEvent.value);
+                }
                 break;
             case 0xB3:
-                controlCollector.emitMasterTune(systemEvent.trackIndex, systemEvent.command, systemEvent.name, midiTick,
-                        systemEvent.value & 0x7F);
+                reportAsUnmapped = true;
                 break;
             case 0xD0:
             case 0xDC:
@@ -896,20 +943,30 @@ public final class TimelineCompiler {
                 reportAsUnmapped = true;
                 break;
             case 0xBA:
-                applyPatchModeChange(systemEvent, midiTick, controlCollector, channels, outputLaneTracker);
+                if (acceptTrackZero7Bit(systemEvent)) {
+                    applyPatchModeChange(systemEvent, midiTick, controlCollector, channels, outputLaneTracker);
+                }
                 reportAsUnmapped = true;
                 break;
             case 0xBC:
                 break;
             case 0xBD:
-                controlCollector.emitMasterVolume(systemEvent.trackIndex, systemEvent.command, systemEvent.name, midiTick,
-                        clamp(0, 127, systemEvent.value));
+                if (acceptTrackZero7Bit(systemEvent)) {
+                    systemState.masterVolume = clamp(0, 127,
+                            systemState.masterVolume + systemEvent.value - 0x40);
+                    controlCollector.emitMasterVolume(systemEvent.trackIndex, systemEvent.command, systemEvent.name, midiTick,
+                            systemState.masterVolume);
+                }
                 break;
             case 0xBE:
-                applyGlobalStop(systemEvent, midiTick, controlCollector, notes, activeNotes, warnings, warningKeys);
+                if (systemEvent.trackIndex == 0) {
+                    applyGlobalStop(systemEvent, midiTick, controlCollector, notes, activeNotes, warnings, warningKeys);
+                }
                 break;
             case 0xBF:
-                applySessionReset(systemEvent, midiTick, controlCollector, notes, activeNotes, channels, voiceMap);
+                if (systemEvent.trackIndex == 0) {
+                    applySessionReset(systemEvent, midiTick, controlCollector, notes, activeNotes, channels, systemState, voiceMap);
+                }
                 break;
             case 0xE0:
                 applyProgramChange(systemEvent, midiTick, controlCollector, channels, outputLaneTracker, voiceMap,
@@ -989,6 +1046,7 @@ public final class TimelineCompiler {
         ChannelState channel = channels[logicalChannel];
         channel.program = systemEvent.value & 0x3F;
         channel.hasProgramEvent = true;
+        applyNativePatchHelperState(channel);
         updateRawPatchWord(channel);
         observePatchSnapshot(channel);
         observeOutputLaneActivity(outputLaneTracker, logicalChannel);
@@ -1013,9 +1071,15 @@ public final class TimelineCompiler {
         ChannelState channel = channels[logicalChannel];
         channel.bank = systemEvent.value & 0x3F;
         channel.hasBankEvent = true;
+        if (channel.mode == 1) {
+            applyNativePatchHelperState(channel);
+        }
         updateRawPatchWord(channel);
         observePatchSnapshot(channel);
         observeOutputLaneActivity(outputLaneTracker, logicalChannel);
+        if (channel.mode != 1) {
+            return;
+        }
         channel.patchDirty = true;
         if (!channel.hasProgramEvent && channel.latePatchOverrideEntry == PSM_LATE_PATCH_ENTRY_EMPTY) {
             return;
@@ -1122,6 +1186,7 @@ public final class TimelineCompiler {
         recordOrdinaryNativeControl(systemEvent, midiTick, logicalChannel, ORDINARY_NATIVE_PATH_PITCH,
                 HOST_MAPPING_PITCH_BEND, true, false, ordinaryNativeControls);
         if (logicalChannel < MIDI_CHANNEL_COUNT) {
+            emitPendingPitchRange(controlCollector, channel, logicalChannel, systemEvent, midiTick);
             controlCollector.emitPitchBend(systemEvent.trackIndex, systemEvent.command, systemEvent.name, logicalChannel, midiTick,
                     computePitchBend(channel));
         }
@@ -1147,6 +1212,7 @@ public final class TimelineCompiler {
         recordOrdinaryNativeControl(systemEvent, midiTick, logicalChannel, ORDINARY_NATIVE_PATH_PITCH,
                 HOST_MAPPING_PITCH_BEND, true, false, ordinaryNativeControls);
         if (logicalChannel < MIDI_CHANNEL_COUNT) {
+            emitPendingPitchRange(controlCollector, channel, logicalChannel, systemEvent, midiTick);
             controlCollector.emitPitchBend(systemEvent.trackIndex, systemEvent.command, systemEvent.name, logicalChannel, midiTick,
                     computePitchBend(channel));
         }
@@ -1198,13 +1264,24 @@ public final class TimelineCompiler {
         }
         ChannelState channel = channels[logicalChannel];
         channel.pitchRange = range;
+        channel.pitchRangeDirty = true;
         observeOutputLaneActivity(outputLaneTracker, logicalChannel);
         recordOrdinaryNativeControl(systemEvent, midiTick, logicalChannel, ORDINARY_NATIVE_PATH_PITCH,
-                HOST_MAPPING_RPN_PITCH_RANGE, true, false, ordinaryNativeControls);
-        if (logicalChannel < MIDI_CHANNEL_COUNT) {
-            controlCollector.emitPitchRange(systemEvent.trackIndex, systemEvent.command, systemEvent.name, logicalChannel, midiTick,
-                    range);
+                HOST_MAPPING_NONE, false, false, ordinaryNativeControls);
+    }
+
+    private void emitPendingPitchRange(
+            ControlCollector controlCollector,
+            ChannelState channel,
+            int logicalChannel,
+            SystemEvent systemEvent,
+            long midiTick) {
+        if (!channel.pitchRangeDirty) {
+            return;
         }
+        controlCollector.emitPitchRange(
+                systemEvent.trackIndex, systemEvent.command, systemEvent.name, logicalChannel, midiTick, channel.pitchRange);
+        channel.pitchRangeDirty = false;
     }
 
     private void applyModulation(
@@ -1291,10 +1368,12 @@ public final class TimelineCompiler {
             List<PlaybackTimeline.CompiledNote> notes,
             Map<Integer, ActiveNote> activeNotes,
             ChannelState[] channels,
+            SystemState systemState,
             int[] voiceMap) {
         forceStopActiveNotes(systemEvent.rawTick, midiTick, notes, activeNotes);
         controlCollector.emitAllSoundOff(systemEvent.trackIndex, systemEvent.command, systemEvent.name, midiTick);
         resetChannelStates(channels);
+        systemState.masterVolume = DEFAULT_MASTER_VOLUME;
         resetVoiceMap(voiceMap);
         controlCollector.resetCaches();
         emitInitialMidiDefaults(controlCollector, channels, midiTick);
@@ -1315,6 +1394,10 @@ public final class TimelineCompiler {
         }
     }
 
+    private static void applyNativePatchHelperState(ChannelState channel) {
+        channel.noteOnSuppressed = channel.mode != 0 && channel.mode != 1;
+    }
+
     private void applyPatchModeChange(
             SystemEvent systemEvent,
             long midiTick,
@@ -1327,10 +1410,13 @@ public final class TimelineCompiler {
         }
         ChannelState channel = channels[logicalChannel];
         channel.mode = systemEvent.value & 0x07;
+        if (channel.mode == 1) {
+            applyNativePatchHelperState(channel);
+        }
         observePatchSnapshot(channel);
         observeOutputLaneActivity(outputLaneTracker, logicalChannel);
-        channel.patchDirty = true;
         if (channel.mode == 1) {
+            channel.patchDirty = true;
             emitPatchIfNeeded(controlCollector, channel, logicalChannel, outputLaneTracker, systemEvent.trackIndex,
                     systemEvent.command, systemEvent.name, midiTick);
         }
@@ -1392,7 +1478,7 @@ public final class TimelineCompiler {
         if (patch.suppressed) {
             return;
         }
-        if (!channel.patchDirty && channel.lastPatch != null && channel.lastPatch.sameAs(patch)) {
+        if (!channel.patchDirty && channel.lastPatch != null) {
             return;
         }
         if (channel.lastPatch != null && channel.lastPatch.sameAs(patch)) {
@@ -1478,7 +1564,7 @@ public final class TimelineCompiler {
     }
 
     private static void observePatchSnapshot(ChannelState channel) {
-        if (!channel.allowsOrdinaryNotes() || !channel.hasProgramEvent) {
+        if (!channel.isOrdinaryPatchMode() || !channel.hasProgramEvent) {
             return;
         }
         if (hasSpecialSidebandFamily(channel.rawPatchWord)) {
@@ -1523,7 +1609,7 @@ public final class TimelineCompiler {
     }
 
     private PatchSelection resolveAuthoritativeOrdinaryPatchSelection(ChannelState channel) {
-        if (!channel.allowsOrdinaryNotes() || !channel.hasProgramEvent) {
+        if (!channel.isOrdinaryPatchMode() || !channel.hasProgramEvent) {
             return null;
         }
         int patchWord = channel.rawPatchWord & 0x0FFF;
@@ -2044,6 +2130,23 @@ public final class TimelineCompiler {
         return systemEvent.command >= 0xC0 && systemEvent.command <= 0xCF && systemEvent.timebase > 0;
     }
 
+    private static boolean isEffectiveTempoStateEvent(SystemEvent systemEvent) {
+        if (systemEvent.trackIndex != 0) {
+            return false;
+        }
+        if (isTempo(systemEvent)) {
+            return true;
+        }
+        if (systemEvent.command == 0xBC) {
+            return systemEvent.value < 0x80;
+        }
+        return systemEvent.command == 0xBF;
+    }
+
+    private static boolean acceptTrackZero7Bit(SystemEvent systemEvent) {
+        return systemEvent.trackIndex == 0 && systemEvent.value < 0x80;
+    }
+
     private static int laneIndex(int trackIndex, int voice) {
         return (trackIndex * 4) + voice;
     }
@@ -2085,12 +2188,6 @@ public final class TimelineCompiler {
 
     private static int computePitchBend(ChannelState channel) {
         return clamp(0, 16383, (8 * (channel.pitchFine + (32 * channel.pitchCoarse))) - 256);
-    }
-
-    private static int computeMasterTunePitchBend(int value) {
-        int centsAdjustment = ((value & 0x7F) - 0x40) * 100;
-        int pitchBendValue = ((centsAdjustment * 8192) / 1200) + 8192;
-        return clamp(0, 16383, pitchBendValue);
     }
 
     private static long normalizeMidiEnd(long midiStartTick, long midiEndTick) {
@@ -2277,13 +2374,23 @@ public final class TimelineCompiler {
         int pitchCoarse = DEFAULT_PITCH_COARSE;
         int pitchFine = DEFAULT_PITCH_FINE;
         int pitchRange = DEFAULT_PITCH_RANGE;
+        boolean pitchRangeDirty = false;
         int modulation = DEFAULT_MODULATION;
+        boolean noteOnSuppressed = false;
         boolean patchDirty = true;
         HostPatch lastPatch;
 
-        boolean allowsOrdinaryNotes() {
+        boolean isOrdinaryPatchMode() {
             return mode == 0 || mode == 1;
         }
+
+        boolean allowsOrdinaryNoteOn() {
+            return !noteOnSuppressed;
+        }
+    }
+
+    private static final class SystemState {
+        int masterVolume = DEFAULT_MASTER_VOLUME;
     }
 
     private static final class HostPatch {
@@ -2529,16 +2636,6 @@ public final class TimelineCompiler {
             for (int midiChannel = 0; midiChannel < MIDI_CHANNEL_COUNT; midiChannel++) {
                 emitDedupedControl(sourceTrack, sourceCommand, sourceName, midiChannel, midiTick, 10,
                         clamp(0, 127, value));
-            }
-        }
-
-        void emitMasterTune(int sourceTrack, int sourceCommand, String sourceName, long midiTick, int value) {
-            if (value < 0x34 || value > 0x4C) {
-                return;
-            }
-            int pitchBend = computeMasterTunePitchBend(value);
-            for (int midiChannel = 0; midiChannel < MIDI_CHANNEL_COUNT; midiChannel++) {
-                emitPitchBend(sourceTrack, sourceCommand, sourceName, midiChannel, midiTick, pitchBend);
             }
         }
 
