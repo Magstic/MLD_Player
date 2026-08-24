@@ -28,21 +28,22 @@ playback.
   - `0xC0..0xC6`
   - `0xC8..0xCE`
 - Tempo-state events also include:
-  - `0xBC`: signed relative tempo adjustment
-  - `0xBF`: session reset to `120 BPM / timebase 48`
-- If no tempo seed exists, a synthetic tick-`0` seed of `120 BPM / timebase 48`
+  - `0xBC`: relative tempo adjustment by `unsigned(value) - 0x40`
+  - `0xBF`: session reset with tempo restored to `125 BPM`; active timebase is preserved
+- If no tempo seed exists, a synthetic tick-`0` seed of `125 BPM / timebase 48`
   is inserted.
-- If the first observed tempo seed starts after raw tick `0`, a synthetic
-  origin seed with that first seed's `(timebase, tempo)` is inserted at raw
-  tick `0`.
+- If the first observed tempo-state event starts after raw tick `0`, the native
+  default `125 BPM / timebase 48` governs the interval from raw tick `0`.
 - Raw-to-MIDI conversion is piecewise:
   - `midi_delta = raw_delta * 1920 / active_timebase`
 - Conductor tempo meta events use:
   - `mpqn = 60000000 / tempo`
-- `0xBC` keeps the active timebase and applies a signed 8-bit tempo delta,
-  clamped to `20..255`.
-- `0xBF` starts a new tempo segment at the reset tick using
-  `120 BPM / timebase 48`.
+- Multiple tempo-state writes at the same raw tick are coalesced to the final state;
+  zero-duration intermediate states are retained only in the raw decoded event list.
+- `0xBC` keeps the active timebase and applies `unsigned(value) - 0x40` to
+  tempo, clamped to `20..255`.
+- `0xBF` starts a new tempo segment at the reset tick using `125 BPM` while
+  preserving the active timebase.
 - Scheduled note expiries at raw tick `T` are flushed before any other event at
   raw tick `T`.
 
@@ -183,12 +184,12 @@ GM output.
 
 Tempo-state events:
 
-- `0xC0..0xC6` and `0xC8..0xCE` update timebase / tempo and emit
+- `0xC0..0xC6` and `0xC8..0xCE` update timebase and set
+  `tempo = max(unsigned(value), 20)`, then emit conductor-track MIDI tempo meta only
+- `0xBC` updates the active tempo by `unsigned(value) - 0x40` and emits
   conductor-track MIDI tempo meta only
-- `0xBC` updates the active tempo by signed relative delta and emits
-  conductor-track MIDI tempo meta only
-- `0xBF` restores `120 BPM / timebase 48` and also performs the session reset
-  described below
+- `0xBF` restores tempo to `125 BPM`, preserves the active timebase, and also
+  performs the session reset described below
 
 State-only events:
 

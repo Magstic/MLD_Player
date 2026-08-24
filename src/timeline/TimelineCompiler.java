@@ -25,7 +25,7 @@ public final class TimelineCompiler {
     private static final int MIDI_CHANNEL_COUNT = 16;
     private static final int MAX_LOGICAL_CHANNELS = 64;
     private static final int DEFAULT_TIMEBASE = 48;
-    private static final int DEFAULT_TEMPO = 120;
+    private static final int DEFAULT_TEMPO = 125;
     private static final int MIN_TEMPO = 20;
     private static final int MAX_TEMPO = 255;
     private static final int DEFAULT_LEVEL = 63;
@@ -479,12 +479,14 @@ public final class TimelineCompiler {
                 seeds.add(new RawTempoPoint(0, currentTimebase, currentTempo, -1, -1, true));
             }
             if (isTempo(systemEvent)) {
-                currentTimebase = systemEvent.timebase > 0 ? systemEvent.timebase : currentTimebase;
-                currentTempo = systemEvent.value > 0 ? systemEvent.value : currentTempo;
+                currentTimebase = systemEvent.timebase;
+                currentTempo = clamp(MIN_TEMPO, MAX_TEMPO, systemEvent.value);
             } else if (systemEvent.command == 0xBC) {
-                currentTempo = clamp(MIN_TEMPO, MAX_TEMPO, currentTempo + signedByte(systemEvent.value));
+                currentTempo = clamp(
+                        MIN_TEMPO,
+                        MAX_TEMPO,
+                        currentTempo + (systemEvent.value & 0xFF) - 0x40);
             } else if (systemEvent.command == 0xBF) {
-                currentTimebase = DEFAULT_TIMEBASE;
                 currentTempo = DEFAULT_TEMPO;
             }
             seeds.add(new RawTempoPoint(
@@ -501,12 +503,11 @@ public final class TimelineCompiler {
     private List<PlaybackTimeline.TempoPoint> buildTempoPoints(List<RawTempoPoint> seeds, List<String> warnings) {
         List<PlaybackTimeline.TempoPoint> points = new ArrayList<PlaybackTimeline.TempoPoint>();
         if (seeds.isEmpty()) {
-            warnings.add("No tempo event observed; inserting synthetic 120 BPM / timebase 48 point.");
+            warnings.add("No tempo event observed; inserting native default 125 BPM / timebase 48 point.");
             seeds.add(new RawTempoPoint(0, DEFAULT_TIMEBASE, DEFAULT_TEMPO, -1, -1, true));
         } else if (seeds.get(0).rawTick > 0) {
-            warnings.add("First tempo event does not start at tick 0; inserting synthetic point at origin.");
-            RawTempoPoint first = seeds.get(0);
-            seeds.add(0, new RawTempoPoint(0, first.timebase, first.tempo, -1, -1, true));
+            warnings.add("First tempo event does not start at tick 0; inserting native default point at origin.");
+            seeds.add(0, new RawTempoPoint(0, DEFAULT_TIMEBASE, DEFAULT_TEMPO, -1, -1, true));
         }
 
         long midiTick = 0L;
@@ -520,13 +521,20 @@ public final class TimelineCompiler {
             }
             midiTick += ((long) deltaRaw * PlaybackTimeline.MIDI_PPQ) / lastTimebase;
             int mpqn = 60000000 / Math.max(1, seed.tempo);
-            points.add(new PlaybackTimeline.TempoPoint(
+            PlaybackTimeline.TempoPoint point = new PlaybackTimeline.TempoPoint(
                     seed.rawTick,
                     midiTick,
                     seed.timebase,
                     seed.tempo,
                     mpqn,
-                    seed.synthetic));
+                    seed.synthetic);
+            if (!points.isEmpty() && points.get(points.size() - 1).rawTick == seed.rawTick) {
+                // Native MLD timing commits no elapsed time between tempo-state writes at the
+                // same raw tick. Only the final state can govern the following positive delta.
+                points.set(points.size() - 1, point);
+            } else {
+                points.add(point);
+            }
             lastRawTick = seed.rawTick;
             lastTimebase = seed.timebase;
         }
@@ -2071,11 +2079,6 @@ public final class TimelineCompiler {
         int centsAdjustment = ((value & 0x7F) - 0x40) * 100;
         int pitchBendValue = ((centsAdjustment * 8192) / 1200) + 8192;
         return clamp(0, 16383, pitchBendValue);
-    }
-
-    private static int signedByte(int value) {
-        int unsigned = value & 0xFF;
-        return unsigned >= 0x80 ? unsigned - 0x100 : unsigned;
     }
 
     private static long normalizeMidiEnd(long midiStartTick, long midiEndTick) {

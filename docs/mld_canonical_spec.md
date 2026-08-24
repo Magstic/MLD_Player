@@ -253,7 +253,7 @@ Tempo / timebase commands:
 
 - `0xC0..0xC6` -> `6, 12, 24, 48, 96, 192, 384`
 - `0xC8..0xCE` -> `15, 30, 60, 120, 240, 480, 960`
-- `0xC7` and `0xCF` are reserved / invalid timebase selectors
+- `0xC7` and `0xCF` have zero table entries and are ignored by the native timing handler
 
 Timing scale:
 
@@ -261,13 +261,13 @@ Timing scale:
 
 Live tempo and reset controls:
 
-- the default tempo state is `120 BPM / timebase 48`
-- ordinary timebase commands update the active timebase and carry the active
-  tempo value
-- `0xBC` applies a signed 8-bit relative adjustment to the active tempo
+- the default tempo state is `125 BPM / timebase 48`
+- valid ordinary timebase commands update the active timebase and set tempo to
+  `max(unsigned(value), 20)`
+- `0xBC` applies `unsigned(value) - 0x40` to the active tempo
 - relative tempo is clamped to `20..255`
 - `0xBC` does not change the active timebase
-- `0xBF` restores the default tempo state `120 BPM / timebase 48`
+- `0xBF` restores tempo to `125 BPM` and preserves the active timebase
 
 ## Ordinary Note Events
 
