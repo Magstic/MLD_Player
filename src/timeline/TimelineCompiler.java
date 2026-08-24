@@ -117,8 +117,10 @@ public final class TimelineCompiler {
 
         long totalMidiTicks = 0L;
         for (TrackEvent event : orderedEvents) {
+            // The native scheduler expires pending gates before processing any track event
+            // at the same raw tick, including non-melody/reserved envelopes.
+            totalMidiTicks = Math.max(totalMidiTicks, flushExpiredNotes(event.rawTick, activeNotes, notes));
             if (event instanceof NoteEvent) {
-                totalMidiTicks = Math.max(totalMidiTicks, flushExpiredNotes(event.rawTick, activeNotes, notes));
                 totalMidiTicks = Math.max(totalMidiTicks, handleNoteEvent(
                         (NoteEvent) event,
                         mapper,
@@ -133,7 +135,6 @@ public final class TimelineCompiler {
                 continue;
             }
             if (event instanceof ResourceEvent) {
-                totalMidiTicks = Math.max(totalMidiTicks, flushExpiredNotes(event.rawTick, activeNotes, notes));
                 ResourceEvent resourceEvent = (ResourceEvent) event;
                 long midiTick = mapper.rawToMidiTick(resourceEvent.rawTick);
                 totalMidiTicks = Math.max(totalMidiTicks, midiTick);
@@ -141,7 +142,6 @@ public final class TimelineCompiler {
                 continue;
             }
             if (event instanceof SystemEvent) {
-                totalMidiTicks = Math.max(totalMidiTicks, flushExpiredNotes(event.rawTick, activeNotes, notes));
                 SystemEvent systemEvent = (SystemEvent) event;
                 long midiTick = mapper.rawToMidiTick(systemEvent.rawTick);
                 totalMidiTicks = Math.max(totalMidiTicks, midiTick);
@@ -634,13 +634,7 @@ public final class TimelineCompiler {
         }
 
         ChannelState channel = channels[logicalChannel];
-        if (!channel.allowsOrdinaryNotes()) {
-            addWarningOnce(warnings, warningKeys, "suppressed_mode_" + logicalChannel + "_" + channel.mode,
-                    "Suppressing ordinary notes on logical channel " + logicalChannel
-                            + " because mode " + channel.mode + " is not a melodic ordinary mode.");
-            return -1L;
-        }
-        observeOutputLaneActivity(outputLaneTracker, logicalChannel);
+        boolean sounding = channel.allowsOrdinaryNotes();
         if (logicalChannel >= MIDI_CHANNEL_COUNT) {
             addWarningOnce(warnings, warningKeys, "host_channel_" + logicalChannel,
                     "Skipping note mapped to logical channel " + logicalChannel
@@ -649,24 +643,35 @@ public final class TimelineCompiler {
         }
 
         long midiStartTick = mapper.rawToMidiTick(noteEvent.rawTick);
-        emitPatchIfNeeded(controlCollector, channel, logicalChannel, outputLaneTracker, noteEvent.trackIndex, -1,
-                "note_patch_sync",
-                midiStartTick);
+        if (sounding) {
+            observeOutputLaneActivity(outputLaneTracker, logicalChannel);
+            emitPatchIfNeeded(controlCollector, channel, logicalChannel, outputLaneTracker, noteEvent.trackIndex, -1,
+                    "note_patch_sync",
+                    midiStartTick);
+        } else {
+            addWarningOnce(warnings, warningKeys, "suppressed_mode_" + logicalChannel + "_" + channel.mode,
+                    "Mode " + channel.mode + " suppresses native note-on on logical channel " + logicalChannel
+                            + "; preserving its silent gate state for retrigger semantics.");
+        }
 
-        int noteBase = (outputLaneTracker != null && outputLaneTracker.isAuthoritativeSpecial(logicalChannel))
+        // Keep the native scheduler key separate from the MIDI pitch adaptation. The DLL
+        // keys active gates by (resolved channel, native note), before any host-only lane
+        // remapping. Collapsing these two domains changes retrigger semantics.
+        int nativeNote = baseForMode(channel.mode) + noteEvent.pitch + octaveOffset(noteEvent.octaveShift);
+        int midiBase = (sounding && outputLaneTracker != null && outputLaneTracker.isAuthoritativeSpecial(logicalChannel))
                 ? 35 : baseForMode(channel.mode);
-        int midiNote = clamp(0, 127, noteBase + noteEvent.pitch + octaveOffset(noteEvent.octaveShift));
+        int midiNote = clamp(0, 127, midiBase + noteEvent.pitch + octaveOffset(noteEvent.octaveShift));
         int velocity = clamp(1, 127, noteEvent.hasExtraByte() ? noteEvent.velocity * 2 : 126);
         int rawEndTick = noteEvent.rawTick + noteEvent.gate;
-        long midiEndTick = normalizeMidiEnd(midiStartTick, mapper.rawToMidiTick(rawEndTick));
+        long midiEndTick = mapper.rawToMidiTick(rawEndTick);
 
-        Integer activeKey = Integer.valueOf((logicalChannel << 7) | midiNote);
+        Integer activeKey = Integer.valueOf((logicalChannel << 8) | (nativeNote & 0xFF));
         ActiveNote previous = activeNotes.remove(activeKey);
         if (previous != null) {
             // The official live scheduler refreshes the pending gate for an active
             // (channel, note) pair instead of emitting a second note-on.
             activeNotes.put(activeKey, previous.refreshGate(rawEndTick, midiEndTick));
-            return midiEndTick;
+            return previous.sounding ? normalizeMidiEnd(previous.midiStartTick, midiEndTick) : midiEndTick;
         }
 
         activeNotes.put(activeKey, new ActiveNote(
@@ -679,8 +684,9 @@ public final class TimelineCompiler {
                 noteEvent.rawTick,
                 rawEndTick,
                 midiStartTick,
-                midiEndTick));
-        return midiEndTick;
+                midiEndTick,
+                sounding));
+        return sounding ? normalizeMidiEnd(midiStartTick, midiEndTick) : midiEndTick;
     }
 
     private void handleResourceEvent(
@@ -1302,7 +1308,9 @@ public final class TimelineCompiler {
         Iterator<Map.Entry<Integer, ActiveNote>> iterator = activeNotes.entrySet().iterator();
         while (iterator.hasNext()) {
             ActiveNote active = iterator.next().getValue();
-            notes.add(active.toStoppedCompiledNote(rawEndTick, midiEndTick));
+            if (active.sounding) {
+                notes.add(active.toStoppedCompiledNote(rawEndTick, midiEndTick));
+            }
             iterator.remove();
         }
     }
@@ -1677,8 +1685,12 @@ public final class TimelineCompiler {
             if (active.rawEndTick > currentRawTick) {
                 continue;
             }
-            notes.add(active.toFinalCompiledNote());
-            maxTick = Math.max(maxTick, active.midiEndTick);
+            if (active.sounding) {
+                notes.add(active.toFinalCompiledNote());
+                maxTick = Math.max(maxTick, normalizeMidiEnd(active.midiStartTick, active.midiEndTick));
+            } else {
+                maxTick = Math.max(maxTick, active.midiEndTick);
+            }
             iterator.remove();
         }
         return maxTick;
@@ -2380,6 +2392,7 @@ public final class TimelineCompiler {
         final int rawEndTick;
         final long midiStartTick;
         final long midiEndTick;
+        final boolean sounding;
 
         ActiveNote(
                 int sourceTrack,
@@ -2391,7 +2404,8 @@ public final class TimelineCompiler {
                 int rawStartTick,
                 int rawEndTick,
                 long midiStartTick,
-                long midiEndTick) {
+                long midiEndTick,
+                boolean sounding) {
             this.sourceTrack = sourceTrack;
             this.sourceVoice = sourceVoice;
             this.midiChannel = midiChannel;
@@ -2402,6 +2416,7 @@ public final class TimelineCompiler {
             this.rawEndTick = rawEndTick;
             this.midiStartTick = midiStartTick;
             this.midiEndTick = midiEndTick;
+            this.sounding = sounding;
         }
 
         ActiveNote refreshGate(int refreshedRawEndTick, long refreshedMidiEndTick) {
@@ -2415,7 +2430,8 @@ public final class TimelineCompiler {
                     rawStartTick,
                     refreshedRawEndTick,
                     midiStartTick,
-                    normalizeMidiEnd(midiStartTick, refreshedMidiEndTick));
+                    refreshedMidiEndTick,
+                    sounding);
         }
 
         PlaybackTimeline.CompiledNote toStoppedCompiledNote(int stoppedRawEndTick, long stoppedMidiEndTick) {
@@ -2443,7 +2459,7 @@ public final class TimelineCompiler {
                     rawStartTick,
                     rawEndTick,
                     midiStartTick,
-                    midiEndTick);
+                    normalizeMidiEnd(midiStartTick, midiEndTick));
         }
     }
 

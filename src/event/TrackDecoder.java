@@ -48,27 +48,15 @@ public final class TrackDecoder {
                 int command = payload[offset] & 0xFF;
                 offset += 1;
                 boolean longForm = command >= 0xF0;
-                byte[] body;
-
-                if (longForm) {
-                    if (offset + 2 > payload.length) {
-                        throw new IOException("Truncated 7F long resource event in track " + track.index);
-                    }
-                    int length = readBe16(payload, offset);
-                    offset += 2;
-                    if (offset + length > payload.length) {
-                        throw new IOException("7F long resource payload overruns track " + track.index);
-                    }
-                    body = Arrays.copyOfRange(payload, offset, offset + length);
-                    offset += length;
-                } else {
-                    int bodyLength = bodyLengthForResourceCommand(command, file.exstSize);
-                    if (offset + bodyLength > payload.length) {
-                        throw new IOException("Truncated 7F resource body in track " + track.index);
-                    }
-                    body = Arrays.copyOfRange(payload, offset, offset + bodyLength);
-                    offset += bodyLength;
-                }
+                byte[] body = readSpecialEnvelopeBody(
+                        payload,
+                        track.index,
+                        status,
+                        command,
+                        longForm,
+                        file.exstSize,
+                        offset);
+                offset += specialEnvelopeEncodedBodyLength(command, longForm, file.exstSize, body.length);
 
                 events.add(new ResourceEvent(
                         track.index,
@@ -80,6 +68,35 @@ public final class TrackDecoder {
                         body,
                         longForm));
                 resourceCount += 1;
+                continue;
+            }
+
+            if ((status & 0x3F) == 0x3F && status != 0xFF) {
+                if (offset >= payload.length) {
+                    throw new IOException(String.format(
+                            "Truncated %02X reserved envelope in track %d", status, track.index));
+                }
+                int command = payload[offset] & 0xFF;
+                offset += 1;
+                boolean longForm = command >= 0xF0;
+                byte[] body = readSpecialEnvelopeBody(
+                        payload,
+                        track.index,
+                        status,
+                        command,
+                        longForm,
+                        file.exstSize,
+                        offset);
+                offset += specialEnvelopeEncodedBodyLength(command, longForm, file.exstSize, body.length);
+                events.add(new ReservedEvent(
+                        track.index,
+                        eventIndex++,
+                        delta,
+                        rawTick,
+                        status,
+                        command,
+                        body,
+                        longForm));
                 continue;
             }
 
@@ -163,8 +180,6 @@ public final class TrackDecoder {
                     }
                     offset += skip;
                 }
-            } else {
-                warnings.add("Track " + track.index + " uses 3-byte note layout fallback");
             }
 
             events.add(new NoteEvent(
@@ -208,18 +223,46 @@ public final class TrackDecoder {
         return ((data[offset] & 0xFF) << 8) | (data[offset + 1] & 0xFF);
     }
 
-    private static int bodyLengthForResourceCommand(int command, int exstSize) {
-        switch (command) {
-            case 0x80:
-            case 0x81:
-            case 0x90:
-                return 1;
-            default:
-                if (command < 0x80) {
-                    return 1 + Math.max(0, exstSize);
-                }
-                return 1;
+    private static byte[] readSpecialEnvelopeBody(
+            byte[] payload,
+            int trackIndex,
+            int status,
+            int command,
+            boolean longForm,
+            int exstSize,
+            int offset) throws IOException {
+        if (longForm) {
+            if (offset + 2 > payload.length) {
+                throw new IOException(String.format(
+                        "Truncated %02X long envelope in track %d", status, trackIndex));
+            }
+            int length = readBe16(payload, offset);
+            int bodyStart = offset + 2;
+            if (bodyStart + length > payload.length) {
+                throw new IOException(String.format(
+                        "%02X long envelope payload overruns track %d", status, trackIndex));
+            }
+            return Arrays.copyOfRange(payload, bodyStart, bodyStart + length);
         }
+
+        int bodyLength = bodyLengthForSpecialCommand(command, exstSize);
+        if (offset + bodyLength > payload.length) {
+            throw new IOException(String.format(
+                    "Truncated %02X envelope body in track %d", status, trackIndex));
+        }
+        return Arrays.copyOfRange(payload, offset, offset + bodyLength);
+    }
+
+    private static int specialEnvelopeEncodedBodyLength(
+            int command,
+            boolean longForm,
+            int exstSize,
+            int decodedBodyLength) {
+        return longForm ? 2 + decodedBodyLength : bodyLengthForSpecialCommand(command, exstSize);
+    }
+
+    private static int bodyLengthForSpecialCommand(int command, int exstSize) {
+        return command < 0x80 ? 1 + Math.max(0, exstSize) : 1;
     }
 
     private static Map<Integer, Integer> createTimebases() {
