@@ -360,6 +360,28 @@ Selector `31` carries a clear condition when the external config-table count is 
 
 All resource-state entries produce zero MIDI messages.
 
+## Machine-Dependent State Mapping
+
+`0xFF 0xFF` machine-dependent payloads produce zero MIDI messages.
+
+The bridge preserves:
+
+- first-match descriptor index
+- native handler ID
+- matched-prefix length and body offset
+- normalized slot/channel/operation/format fields for `0x8000`, `0x8001`, and `0x8002` families
+- `0x8001` coded payload length, native duration byte count, and derived duration milliseconds
+- `0x8002` sample rate, channel count, coded payload length, and derived duration milliseconds
+- compact control opcode fields
+- `31 10` second-stage dispatch code and delegated handler ID
+- 16-lane route classes for `11 01 F2 07`
+- synth request type, subtype, forwarded payload offset, and layered-normal/layered-ft downstream action class
+- layered and monolithic native-effect class
+
+Descriptor matching follows the native ordered profile. Raw aliases that resolve to one handler normalize to the same family. Later duplicate descriptors remain unreachable under first-match dispatch.
+
+Machine-dependent audio payloads stay outside the MIDI note/controller stream. Slot loads, backend starts, route state, synth request state, and branch-owned audio resources remain native-side state.
+
 ## Non-Sounding Families
 
 The following families produce no sounding MIDI:

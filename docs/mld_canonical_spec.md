@@ -9,7 +9,7 @@
 ## Scope
 
 This document defines the `melo` container grammar, ordinary track event model,
-live `0x7F` resource family, and branch-specific machine-dependent families.
+live `0x7F` resource family, and machine-dependent descriptor families.
 
 ## Branches
 
@@ -17,14 +17,13 @@ Three behaviorally relevant branches exist:
 
 - `monolithic`
   - used by `lib002` and `lib004`
-  - owns raw selector families `71/01 10/11/12/40/41/B0/B1/B2`
+  - uses the shared machine-dependent descriptor profile with a monolithic handler table
 - `layered-normal`
-  - used by `lib003`
-  - provides the layered parser, live resource model, and normal-synth subtype rules
+  - uses `MFiPluginMFi5.dll` with `MFiSynth.dll`
+  - uses the shared machine-dependent descriptor profile with layered handlers and normal-synth downstream rules
 - `layered-ft`
-  - used by `lib003ft`
-  - shares the same outer parser and rule blob as `layered-normal`
-  - diverges at the synth backend protocol
+  - uses `MFiPluginMFi5.dll` with `MFiSynth_ft.dll`
+  - uses the shared machine-dependent descriptor profile with layered handlers and FT-synth downstream rules
 
 Parser-valid machine-dependent families may have no runtime action in a branch.
 
@@ -577,98 +576,250 @@ The 3D callback receives a `0x28`-byte record:
 
 ## Machine-Dependent Families
 
-Machine-dependent payloads are branch-bounded.
+`0xFF 0xFF` carries a BE16-length machine-dependent payload.
 
-### Layered Audio Families
+### Descriptor Dispatch
 
-- `71 81`: compact audio channel level
-- `71 82`: compact audio channel pan
-- `71 83`: legacy `0x8000` slot family
-- `71 84`: `0x8001` slot family
-- `71 86`: extended-rate `0x8000` slot family
-- `71 8F`: valid grammar; no runtime action in `layered-normal`
+The five MFi5 family profiles use the same ordered 64-entry descriptor profile.
+Each descriptor contains two byte patterns and a handler ID. Matching is sequential and first-match.
 
-Control model:
+Effective descriptor aliases:
 
-- `71 83`
-  - mode `0`: load / refresh
-  - mode `1`: same as mode `0`
-  - mode `2`: start loaded slot
-  - mode `3`: ignore
-- `71 84`
-  - mode `0`: load / refresh only
-  - mode `1`: load / refresh then start
-  - mode `2`: start without reload
-  - mode `3`: ignore
-- `71 86`
-  - same control model as `71 84`
+| Handler | Raw prefix | Native family |
+|---:|---|---|
+| `0` | `21 81`, `41 81`, `71 81` | audio level |
+| `1` | `21 82`, `41 80` | audio pan |
+| `0x104` | `61 81`, `31 81` | phase-gated audio level |
+| `0x105` | `61 82`, `41 82`, `71 82`, `31 82` | phase-gated audio pan |
+| `2` | `21 83`, `41 83`, `71 83` | `0x8000` slot |
+| `3` | `21 86`, `41 86`, `71 86` | cached `0x8000` slot |
+| `0x109` | `61 83` | inline `0x8001` slot |
+| `0x106` | `61 84`, `41 84`, `71 84`, `31 84` | counted-duration `0x8001` slot |
+| `0x103` | `41 8F`, `71 8F`, `31 8F` | empty handler |
+| `0x100` | `61 10`, `41 10`, `71 10`, `31 30`, `01 10` | synth request subtype 0 |
+| `0x101` | `61 11`, `41 11`, `71 11`, `31 31`, `01 11` | synth request subtype 0 |
+| `0x102` | `61 12`, `41 12`, `71 12`, `31 32`, `01 12` | synth request subtype 0 |
+| `4` | `21 90`, `41 90`, `71 90` | synth request subtype 1 |
+| `5` | `21 91`, `41 91`, `71 91` | synth request subtype 1 |
+| `6` | `21 92`, `41 92`, `71 92` | synth request subtype 1 body-forward |
+| `7` | `21 93`, `41 93`, `71 93` | synth request subtype 1 |
+| `0x400` | `11 01 F0 07` | compact `0x8002` load state |
+| `0x401` | `11 01 F1` | compact slot control |
+| `0x402` | `31 10` | mixed second-stage dispatcher |
+| `0x403` | `11 01 F0 05` | synth request subtype 2 |
+| `0x404` | `11 01 F0 06` | synth request subtype 2 |
+| `0x405` | `11 01 F0 03` | synth request subtype 2 |
+| `0x406` | `11 01 F0 04` | synth request subtype 2 |
+| `0x407` | `11 01 F2 07` | 16-lane route state |
 
-### Layered One-Byte Synth-Bridge Families
+Later duplicate descriptors for `41 81`, `71 81`, and `21 82` are unreachable under first-match dispatch.
 
-In `layered-normal`, live forms are:
+### Audio Level and Pan
 
-- `71 12`
-- `71 93`
+Handlers `0` and `1` consume one packed byte:
 
-In `layered-normal`, runtime-inactive forms are:
+- channel = high 2 bits
+- value = `2 * low6`
+- handler `0` uses layered audio backend slot `+0x38`
+- handler `1` uses layered audio backend slot `+0x3C`
 
-- `71 10`
-- `71 11`
-- `71 90`
-- `71 91`
-- `71 92`
+Handlers `0x104` and `0x105` use the same payload and backend actions. Runtime phase value `1` suppresses these wrappers.
 
-Meanings:
+`lib002/lib004` keep the descriptor grammar and produce no audio backend effect for these handler IDs.
 
-- `71 12`: conditional rewrite-match installer / remover
-- `71 93`: conditional mapping-rewrite installer
+### `0x8000` Slot Handlers
 
-In `layered-ft`, raw bridge relations are:
+Handler `2` body:
 
-- `71 10 / 71 11 / 71 12` -> internal `0x10 / 0x11 / 0x12`
-- `.. 92 40 ...` / `.. 92 41 ...` -> internal `0x40 / 0x41`
+- byte 0: channel high2, slot low6
+- byte 1: operation high2, format low6
+- remaining bytes: slot payload
+- format `4`: `4000 Hz`
+- format `5`: `8000 Hz`
 
-### Layered Compact Mixed Families
+Operations:
 
-Recognized raw families:
+- `0`: load / refresh, then enter the start gate
+- `1`: load / refresh, then enter the start gate
+- `2`: enter the start gate with the existing slot
+- `3`: ignore
 
-- `11 01 F0 07`
-- `11 01 F1`
-- `31 10`
-- `11 01 F2 07`
-- `11 01 F0 05`
-- `11 01 F0 06`
-- `11 01 F0 03`
-- `11 01 F0 04`
+The layered start gate accepts packed channel values `0/1` and applies additional live player-state gates.
 
-Meanings:
+Handler `3` body adds one control byte after byte 1:
 
-- `11 01 F0 07`: compact audio-load family
-- `11 01 F1`: compact slot-control family
-- `31 10`: mixed second-stage dispatcher
-- `11 01 F2 07`: compact 16-channel route / mode map family
-- `11 01 F0 05` and `11 01 F0 04`: conditional mapping-rewrite installers
-- `11 01 F0 06` and `11 01 F0 03`: valid grammar; no runtime action in the layered branch set
+- control bit 0 participates in active-slot cache reuse
+- format `4`: `4000 Hz`
+- format `5`: `8000 Hz`
+- format `6`: `16000 Hz`
+- operation `0`: load / refresh
+- operation `1`: load / refresh, then enter the start gate
+- operation `2`: enter the start gate with the existing slot
+- operation `3`: ignore
 
-### Monolithic Selector Families
+Both handlers maintain slot state in the native player. Layered families also perform audio backend load/release/start calls. Monolithic families retain the internal slot-state mutations.
 
-These belong to `monolithic`:
+### `0x8001` Slot Handlers
 
-- `71/01 10`
-- `71/01 11`
-- `71/01 12`
-- `71/01 40`
-- `71/01 41`
-- `71/01 B0`
-- `71/01 B1`
-- `71/01 B2`
+Common body header for handlers `0x109` and `0x106`:
 
-Meanings:
+- byte 0: channel high2, slot low6
+- byte 1: operation high2, format low6
+- byte 2 bit0: active-slot control flag
 
-- `71/01 10`: sibling programming surface over a `0..63` type-2 target bank
-- `71/01 11`: structured batch-update language over a `16`-target control
-  surface
-- `71/01 12`: compact live form of the same `16`-target surface
-- `71/01 40`: compact 4-lane binding-descriptor family
-- `71/01 41`: companion note-relative 7-bit curve family
-- `71/01 B0/B1/B2`: auxiliary `DSYNC` extension family
+Format table:
+
+| format | sample rate | coded bits |
+|---:|---:|---:|
+| `4` | `8000` | `2` |
+| `5` | `8000` | `4` |
+| `12` | `16000` | `2` |
+| `13` | `16000` | `4` |
+| `20` | `32000` | `2` |
+| `21` | `32000` | `4` |
+
+Operation model:
+
+- `0`: load / refresh
+- `1`: load / refresh, then enter the native start gate
+- `2`: enter the native start gate with the existing slot
+- `3`: ignore
+
+Handler `0x109` uses every byte after the three-byte header as coded payload. `durationByteCount` equals the coded payload length.
+
+Handler `0x106` reads a BE32 `durationByteCount` after the three-byte header. Coded payload begins after the BE32 field and extends to the descriptor-body end.
+
+Native duration:
+
+- `samplesPerByte = 8 / codedBits`
+- `sampleCount = (durationByteCount * samplesPerByte) mod 2^32`
+- `durationMs = floor(sampleCount * 1000 / sampleRate + 0.5)`
+
+Layered families perform audio backend load/release/start calls. Monolithic families maintain the corresponding slot caches without these audio backend calls.
+
+### Compact `0x8002` Load State
+
+`11 01 F0 07` uses handler `0x400`.
+
+Body:
+
+- byte 0: slot
+- byte 1 low2: compact format field
+- byte 1 bit7: channel-count selector; `0` = 1 channel, `1` = 2 channels
+- bytes 2..3: BE16 sample rate
+- coded bits: `4`
+- remaining bytes: coded payload
+
+Native duration:
+
+- `sampleCount = (2 * codedPayloadLength) mod 2^32`
+- `durationMs = floor(sampleCount * 1000 / sampleRate + 0.5)`
+
+Layered families issue the audio load/release path. Monolithic families retain the internal state update.
+
+### Compact Slot Control
+
+`11 01 F1` uses handler `0x401`.
+
+First body byte:
+
+- channel = high2
+- opcode = low4
+
+Opcodes:
+
+- `3/4`: low5 slot + low7 value; layered audio start path uses cached slot duration
+- `5`: low5 slot; layered backend slot `+0x34`
+- `6`: one reserved byte + one value byte; `0..63` maps to `2*value`, `0x80/0xFF` maps to `0x40`, layered backend slot `+0x3C`
+- `7`: one value byte; layered synth/backend object slot `+0x48`
+
+Runtime phase value `1` suppresses the handler. `lib002/lib004` parse this structure and produce no runtime backend side effect.
+
+### 16-Lane Route State
+
+`11 01 F2 07` uses handler `0x407` and consumes 16 body bytes.
+
+For lane `i`:
+
+- class A = `(byte>>4)&3`
+- class B = `(byte>>2)&3`
+- bit1 and bit0 are parsed into temporary values
+- class A `1` writes route flag `0`
+- class A `3` writes route flag `1`
+- class A `0/2` retains the route flag
+- class B is stored in the per-lane route class table
+
+Layered families can additionally invoke backend slot `+0x44` under the native route gate. Monolithic families retain the route-state writes.
+
+### Mixed `31 10` Dispatcher
+
+The first body byte supplies channel high2 and dispatch code low6.
+
+| code | action |
+|---:|---|
+| `4,5,6` | layered synth request type `3`, subtype `2` |
+| `7` | delegate handler `0x400` |
+| `8` | delegate handler `0x407` |
+| `9` | low5 slot + low7 value; layered audio start path |
+| `10` | low5 slot; layered backend slot `+0x34` |
+| `11` | skip one byte, consume value; layered backend slot `+0x3C` with doubled `0..63` or `0x40` for `0x80/0xFF` |
+| `12` | one value byte; layered object slot `+0x48` |
+| `13,14` | empty action |
+| `15` | same audio-start path as code `9` |
+| `16` | layered synth request type `3`, subtype `2` |
+
+For layered synth dispatch, the complete first body byte is forwarded. Code `16` with channel `0` forwards `0x10` and reaches the FT command-10 path. Codes `4/5/6` have no accepted downstream synth action in the normal or FT synth modules. `lib002/lib004`: delegated codes `7/8` retain state effects; the other listed backend actions are inactive.
+
+### Layered Synth Request Bridge
+
+The plugin sends request type `3` through the synth object slot `+0x1C`.
+
+Handler IDs `0x100..0x102`:
+
+- request subtype `0`
+- one byte immediately before the descriptor body is reinserted
+- layered-normal accepts forwarded leading `0x12` and `0x32`
+- layered-ft accepts forwarded leading `0x10`, `0x11`, and `0x12`
+
+Handler IDs `4/5/7`:
+
+- request subtype `1`
+- one byte immediately before the descriptor body is reinserted
+- forwarded leading values are `0x90`, `0x91`, or `0x93`
+- layered-normal accepts `0x93`
+- layered-ft has no action for these values
+
+Handler ID `6`:
+
+- request subtype `1`
+- descriptor body is forwarded directly
+- layered-normal accepts body leading `0x93`
+- layered-ft accepts body leading `0x10`, `0x11`, `0x12`, `0x40`, and `0x41`
+
+Handler IDs `0x403..0x406`:
+
+- request subtype `2`
+- the two bytes immediately before the descriptor body are reinserted
+- forwarded payload begins `F0 05`, `F0 06`, `F0 03`, or `F0 04`
+- layered-normal accepts `F0 04` and `F0 05`
+- layered-ft has no action for leading `0xF0`
+
+FT type-3 leading commands:
+
+| command | downstream action |
+|---:|---|
+| `10` | backend passthrough mode `0` |
+| `11` | backend passthrough mode `1` |
+| `12` | advance payload and enter FT subtype-2 subdispatch |
+| `40` | structured FT control |
+| `41` | structured FT control |
+
+Monolithic `lib002/lib004` map these synth-bridge handler IDs to no-op handlers.
+
+### Family Handler Tables
+
+The descriptor profile is shared across `lib001`, `lib002`, `lib003`, `lib003ft`, and `lib004`.
+
+Layered families route handler IDs to plugin audio handlers and synth request wrappers.
+
+Monolithic `lib002/lib004` retain native implementations for handlers `2`, `3`, `0x106`, `0x109`, `0x400`, `0x401`, `0x402`, and `0x407`. Their synth-bridge IDs and `0x103` resolve to no-op handlers. Handler IDs `0/1` parse their packed values without a persistent backend effect.
