@@ -154,31 +154,46 @@ The layered parser consumes its payload and stores no dedicated metadata object.
 
 ### `thrd`
 
-- initial per-channel config surface
-- same semantic family as live `0x7F 90`
-- only the first accepted top-level `thrd` chunk is applied
-- byte `0` is a global side value
-- remaining bytes are parsed as floor-divided 2-byte records
+- header-level startup channel-config state
+- only the first accepted header `thrd` chunk is applied
+- payload length is at least `1`
+- byte `0` is the global config byte
+- record count is `floor((payload_length - 1) / 2)`
+- one trailing byte is consumed with no record action
 - per record:
-  - first byte low 4 bits = logical channel `0..15`
-  - second byte bit `5` = target table (`0` = synth, `1` = audio)
-  - second byte low 5 bits = raw config subvalue
-- duplicate records for the same `(target table, logical channel)` are ignored
-  after the first write
+  - first byte low 4 bits = channel `0..15`
+  - first byte high 4 bits = reserved
+  - second byte bit `5` = target (`0` = synth, `1` = audio)
+  - second byte low 5 bits = config selector `0..31`
+  - second byte bits `6..7` = reserved
+- duplicate `(target, channel)` records keep the first selector
+- startup application tests `selector < config_table_count`
+- accepted selectors use `config_table_base + selector`
+- out-of-range selectors produce no startup config action
+- `config_table_count` and `config_table_base` come from sound-backend construction state
+- layered helper dispatch also encodes accepted selector as `selector + 2`
+- monolithic helper writes the selected config-slot pointer directly
 
 ### `ainf`
 
-- top-level resource-count / index declaration for layered branches
-- stays in the `be16` top-level group
-- only the first accepted top-level `ainf` chunk is applied
-- byte `0` bit `0x40` disables the active `adat` table
-- otherwise the low 6 bits of byte `0` define the active top-level `adat`
-  count
+- header-level active-resource declaration
+- uses the ordinary `be16` top-level framing
+- only the first accepted header `ainf` chunk is applied
+- payload length is at least `1`
+- byte `0` bit `0x40` is `0` for this playback resource path
+- byte `0` low 6 bits define active `adat` count `0..63`
+- bytes `1..` produce no resource-table state change in this playback path
 
 ### `adat`
 
-- top-level resource payload family for layered branches
-- parsed later through its own `be32` chunk table
+- resource payload chunk with `be32` payload length
+- resource-stage offset = `10 + header_length`
+- the resource stage begins with a contiguous `adat` run
+- the first `ainf.count` entries become active resource indices `0..count-1`
+- each active entry stores payload position and payload length
+- every required active entry must be present and structurally valid
+- additional contiguous `adat` chunks are structurally validated and skipped
+- the first following non-`adat` chunk ends this resource stage
 
 ### `adpm`
 
@@ -436,55 +451,74 @@ Zero-duration rule:
 Playback members:
 
 - `0x7F 00`: trigger / start resource
-- `0x7F 01`: stop resource
-- `0x7F 80`: audio channel level
-- `0x7F 81`: audio channel pan
+- `0x7F 01`: resource stop slot; layered backend dispatch
+- `0x7F 80`: audio channel level; layered backend dispatch
+- `0x7F 81`: audio channel pan; layered backend dispatch
 - `0x7F 90`: persistent per-channel config
 
-Persistent-config semantics:
+Channel calculation:
 
-- `thrd` and live `0x7F 90` are one semantic family
-- `thrd` provides startup / reset defaults
-- live `0x7F 90` updates session state
-- live `0x7F 90` additionally exposes clear sentinel `31`
+- packed high 2 bits define local lane `0..3`
+- audio channel = `trackIndex * 4 + localLane`
 
 Short-form payload layouts:
 
 - `0x7F 00`
-  - first payload byte:
-    - high 2 bits = audio bank lane
-    - low 6 bits = `adat` entry index
-  - total short-form body length = `1 + exst`
-  - when `exst >= 1`, the second consumed byte low 6 bits become live
-    parameter `2 * value`
-  - when `exst == 0`, that live parameter defaults to `126`
+  - total body length = `1 + exst`
+  - first byte high 2 bits = local audio lane
+  - first byte low 6 bits = active `adat` index
+  - index must be below active `ainf` count for backend start action
+  - active entry supplies resource payload position and length
+  - `exst >= 1`: second body byte low 6 bits supply live parameter
+  - `exst == 0`: live parameter low6 defaults to `63`
+  - forwarded live parameter = `2 * low6`
+  - remaining extension bytes are consumed
 - `0x7F 01`
-  - first payload byte:
-    - high 2 bits = audio bank lane
-    - low 6 bits = `adat` entry index
-  - total short-form body length = `1 + exst`
-  - the first packed selector byte supplies the active selector
+  - total body length = `1 + exst`
+  - first byte high 2 bits = local audio lane
+  - first byte low 6 bits = direct stop slot/index
+  - layered families dispatch the lane and slot/index to audio backend vtable `+0x34`
+  - monolithic `lib002/lib004` dispatch reaches a fixed no-op stub
+  - extension bytes are consumed
 - `0x7F 80`
   - one-byte compact payload
-  - high 2 bits = audio bank lane
-  - low 6 bits = level value divided by `2`
-  - effective forwarded level is `2 * low6`
+  - high 2 bits = local audio lane
+  - low 6 bits = level field
+  - dispatch argument = `2 * low6`
+  - layered families dispatch to audio backend vtable `+0x38`
+  - monolithic `lib002/lib004` dispatch reaches a fixed no-op stub
 - `0x7F 81`
   - one-byte compact payload
-  - high 2 bits = audio bank lane
-  - low 6 bits = pan value divided by `2`
-  - effective forwarded pan is `2 * low6`
+  - high 2 bits = local audio lane
+  - low 6 bits = pan field
+  - dispatch argument = `2 * low6`
+  - layered families dispatch to audio backend vtable `+0x3C`
+  - monolithic `lib002/lib004` dispatch reaches a fixed no-op stub
 - `0x7F 90`
   - one-byte compact payload
-  - high 2 bits = local lane / slot selector
-  - bit `5` = target table (`0` = synth, `1` = audio)
-  - low 5 bits = raw config subvalue
-  - raw subvalue `31` is the explicit clear / zero case
+  - high 2 bits = local lane
+  - bit `5` = target (`0` = synth, `1` = audio)
+  - low 5 bits = config selector `0..31`
+  - synth target resolves the local lane through the current voice assignment
+  - synth config dispatch requires resolved channel `< 16`
+  - audio target uses `trackIndex * 4 + localLane`
+  - selector `< config_table_count`: select `config_table_base + selector`
+  - layered helper dispatch also encodes accepted selector as `selector + 2`
+  - monolithic helper writes the selected config-slot pointer directly
+  - selector `31` with `31 >= config_table_count`: clear target config slot
+  - other out-of-range selectors produce no config action
+
+Startup config relationship:
+
+- `thrd` records and live `0x7F 90` use the same synth/audio config-slot families
+- both resolve selectors through the external config table
+- `thrd` out-of-range selectors produce no config action
+- live selector `31` adds the out-of-range clear case
 
 Extended validity:
 
-- other low-valued unhandled `0x7F` subcommands still consume `1 + exst` bytes
-  total and remain valid grammar
+- other unhandled commands below `0x80` consume `1 + exst` body bytes
+- unhandled commands `0x80..0xEF` consume one body byte
 - `0x7F F0` is a separate long-form auxiliary family
 - `0x7F F1..FF` remain length-delimited valid grammar
 

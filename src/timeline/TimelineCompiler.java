@@ -278,8 +278,8 @@ public final class TimelineCompiler {
             List<String> warnings,
             Set<String> warningKeys) {
         List<PlaybackTimeline.ResourceCatalogEntry> entries = new ArrayList<PlaybackTimeline.ResourceCatalogEntry>();
-        TopLevelChunk firstAinf = file.firstTopLevelChunk("ainf");
-        int ainfCount = file.countTopLevelChunks("ainf");
+        TopLevelChunk firstAinf = firstHeaderChunk(file, "ainf");
+        int ainfCount = countHeaderChunks(file, "ainf");
 
         int activeAdatCount = 0;
         boolean useAinfTable = false;
@@ -289,39 +289,60 @@ public final class TimelineCompiler {
                         warnings,
                         warningKeys,
                         "ainf_multiple",
-                        "Multiple ainf chunks were present; only the first ainf chunk is used to build the active adat table.");
+                        "Multiple header ainf chunks were present; only the first ainf chunk seeds the playback resource table.");
             }
             if (firstAinf.payload.length == 0) {
                 addWarningOnce(
                         warnings,
                         warningKeys,
                         "ainf_empty",
-                        "The first ainf chunk is empty and does not register any active adat entries.");
+                        "The first header ainf chunk is empty and fails the playback resource-table header rule.");
             } else if ((firstAinf.payload[0] & 0x40) != 0) {
                 addWarningOnce(
                         warnings,
                         warningKeys,
                         "ainf_rejected_bit40",
-                        "The first ainf chunk sets bit 0x40 in byte 0; the newer-parser active adat table is therefore rejected.");
+                        "The first header ainf chunk sets bit 0x40 in byte 0 and fails the playback resource-table header rule.");
             } else {
-                activeAdatCount = Math.min(64, firstAinf.payload[0] & 0x3F);
+                activeAdatCount = firstAinf.payload[0] & 0x3F;
                 useAinfTable = true;
             }
         }
 
+        java.util.Map<Integer, Integer> activeAdatIndexByOffset = new java.util.HashMap<Integer, Integer>();
+        int resourceStageIndex = topLevelChunkIndexAtOffset(file, resourceStageOffset(file));
+        int contiguousAdatCount = 0;
+        if (resourceStageIndex >= 0) {
+            for (int index = resourceStageIndex; index < file.topLevelChunks.size(); index++) {
+                TopLevelChunk chunk = file.topLevelChunks.get(index);
+                if (!"adat".equals(chunk.id)) {
+                    break;
+                }
+                if (useAinfTable && contiguousAdatCount < activeAdatCount) {
+                    activeAdatIndexByOffset.put(Integer.valueOf(chunk.offset), Integer.valueOf(contiguousAdatCount));
+                }
+                contiguousAdatCount += 1;
+            }
+        }
+        if (useAinfTable && activeAdatCount > contiguousAdatCount) {
+            addWarningOnce(
+                    warnings,
+                    warningKeys,
+                    "ainf_missing_adat_entries",
+                    "The ainf table declares " + activeAdatCount + " active adat entries; the contiguous adat run at the resource-stage boundary contains "
+                            + contiguousAdatCount + ".");
+        }
+
         int catalogIndex = 0;
         int adatIndex = 0;
-        int activeAdatIndex = 0;
         for (TopLevelChunk chunk : file.topLevelChunks) {
             if (!"resource".equals(chunk.category)) {
                 continue;
             }
 
             int currentAdatIndex = "adat".equals(chunk.id) ? adatIndex++ : -1;
-            int currentActiveAdatIndex = -1;
-            if ("adat".equals(chunk.id) && useAinfTable && activeAdatIndex < activeAdatCount) {
-                currentActiveAdatIndex = activeAdatIndex++;
-            }
+            Integer activeIndex = activeAdatIndexByOffset.get(Integer.valueOf(chunk.offset));
+            int currentActiveAdatIndex = activeIndex != null ? activeIndex.intValue() : -1;
             LegacySelectorSummary legacy = null;
             if ("adat".equals(chunk.id) || "adpm".equals(chunk.id)) {
                 legacy = extractLegacySelectorSummary(chunk.payload);
@@ -331,7 +352,7 @@ public final class TimelineCompiler {
                             warningKeys,
                             "resource_no_legacy_" + chunk.offset,
                             "Top-level adat chunk at 0x" + Integer.toHexString(chunk.offset)
-                                    + " did not match the current legacy selector summary heuristic.");
+                                    + " did not match the legacy selector summary heuristic.");
                 }
             }
 
@@ -352,14 +373,6 @@ public final class TimelineCompiler {
                     legacy != null ? legacy.adpmByte2Low3 : -1,
                     legacy != null ? legacy.adpmByte2Bit3 : -1));
         }
-        if (useAinfTable && activeAdatIndex < activeAdatCount) {
-            addWarningOnce(
-                    warnings,
-                    warningKeys,
-                    "ainf_missing_adat_entries",
-                    "The active ainf table declares " + activeAdatCount + " adat entries, but only " + activeAdatIndex
-                            + " top-level adat chunks were available to register.");
-        }
         return entries;
     }
 
@@ -368,8 +381,8 @@ public final class TimelineCompiler {
             List<String> warnings,
             Set<String> warningKeys) {
         List<PlaybackTimeline.InitialChannelConfig> entries = new ArrayList<PlaybackTimeline.InitialChannelConfig>();
-        TopLevelChunk firstThrd = file.firstTopLevelChunk("thrd");
-        int thrdCount = file.countTopLevelChunks("thrd");
+        TopLevelChunk firstThrd = firstHeaderChunk(file, "thrd");
+        int thrdCount = countHeaderChunks(file, "thrd");
 
         if (firstThrd == null) {
             return entries;
@@ -379,14 +392,14 @@ public final class TimelineCompiler {
                     warnings,
                     warningKeys,
                     "thrd_multiple",
-                    "Multiple thrd chunks were present; only the first thrd chunk is applied to the initial channel-config surface.");
+                    "Multiple header thrd chunks were present; only the first thrd chunk seeds initial channel config.");
         }
         if (firstThrd.payload.length == 0) {
             addWarningOnce(
                     warnings,
                     warningKeys,
                     "thrd_empty",
-                    "The first thrd chunk is empty and does not seed any initial channel config.");
+                    "The first header thrd chunk is empty and fails the initial channel-config header rule.");
             return entries;
         }
 
@@ -397,7 +410,7 @@ public final class TimelineCompiler {
                     warnings,
                     warningKeys,
                     "thrd_odd_payload",
-                    "The first thrd chunk has an odd trailing payload byte; the last byte is ignored by the current initial channel-config parser.");
+                    "The first thrd chunk has one trailing record byte; native record count uses floor((length-1)/2).");
         }
 
         boolean[] seenSynth = new boolean[16];
@@ -427,12 +440,46 @@ public final class TimelineCompiler {
                     globalValue,
                     logicalChannel,
                     audioTarget ? "audio" : "synth",
-                    rawSubvalue,
-                    rawSubvalue + 1,
-                    rawSubvalue + 2));
+                    rawSubvalue));
         }
 
         return entries;
+    }
+
+    private static int resourceStageOffset(MldFile file) {
+        return 10 + Math.max(0, file.headerLength);
+    }
+
+    private static TopLevelChunk firstHeaderChunk(MldFile file, String id) {
+        int headerEnd = resourceStageOffset(file);
+        for (TopLevelChunk chunk : file.topLevelChunks) {
+            int chunkEnd = chunk.offset + 4 + chunk.lengthFieldBytes + chunk.length;
+            if (id.equals(chunk.id) && chunk.offset >= 13 && chunkEnd <= headerEnd) {
+                return chunk;
+            }
+        }
+        return null;
+    }
+
+    private static int countHeaderChunks(MldFile file, String id) {
+        int count = 0;
+        int headerEnd = resourceStageOffset(file);
+        for (TopLevelChunk chunk : file.topLevelChunks) {
+            int chunkEnd = chunk.offset + 4 + chunk.lengthFieldBytes + chunk.length;
+            if (id.equals(chunk.id) && chunk.offset >= 13 && chunkEnd <= headerEnd) {
+                count += 1;
+            }
+        }
+        return count;
+    }
+
+    private static int topLevelChunkIndexAtOffset(MldFile file, int offset) {
+        for (int index = 0; index < file.topLevelChunks.size(); index++) {
+            if (file.topLevelChunks.get(index).offset == offset) {
+                return index;
+            }
+        }
+        return -1;
     }
 
     private void emitFirstOnlyTopLevelWarnings(
@@ -750,9 +797,8 @@ public final class TimelineCompiler {
         int valueLow6 = -1;
         int value2x = -1;
         int rawSubvalue = -1;
-        boolean clearsChannelConfig = false;
-        int cachedConfigValue = -1;
-        int backendConfigValue = -1;
+        boolean channelDispatchEligible = false;
+        boolean clearWhenOutOfRange = false;
 
         if (resourceEvent.body.length >= 1) {
             lane = (resourceEvent.body[0] >> 6) & 0x03;
@@ -760,16 +806,11 @@ public final class TimelineCompiler {
 
         switch (resourceEvent.command) {
             case 0x00:
-            case 0x01:
                 if (resourceEvent.body.length >= 1) {
                     resourceIndex = resourceEvent.body[0] & 0x3F;
                     logicalChannel = lane + (4 * resourceEvent.trackIndex);
-                    if (resourceEvent.body.length >= 2) {
-                        extraParamLow6 = resourceEvent.body[1] & 0x3F;
-                        extraParam2x = 2 * extraParamLow6;
-                    } else if (resourceEvent.command == 0x00) {
-                        extraParam2x = 126;
-                    }
+                    extraParamLow6 = resourceEvent.body.length >= 2 ? resourceEvent.body[1] & 0x3F : 63;
+                    extraParam2x = 2 * extraParamLow6;
                     PlaybackTimeline.ResourceCatalogEntry linked = findActiveAdatByIndex(resourceCatalog, resourceIndex);
                     if (linked != null) {
                         linkedCatalogIndex = linked.catalogIndex;
@@ -779,9 +820,15 @@ public final class TimelineCompiler {
                                 warnings,
                                 warningKeys,
                                 "adat_unlinked_" + resourceIndex,
-                                "Resource event index " + resourceIndex
-                                        + " could not be linked to any active ainf/adat table entry.");
+                                "Resource-start index " + resourceIndex
+                                        + " has no entry in the active ainf/adat playback table.");
                     }
+                }
+                break;
+            case 0x01:
+                if (resourceEvent.body.length >= 1) {
+                    resourceIndex = resourceEvent.body[0] & 0x3F;
+                    logicalChannel = lane + (4 * resourceEvent.trackIndex);
                 }
                 break;
             case 0x80:
@@ -799,12 +846,14 @@ public final class TimelineCompiler {
                     boolean audioTarget = (packed & 0x20) != 0;
                     target = audioTarget ? "audio" : "synth";
                     rawSubvalue = packed & 0x1F;
-                    clearsChannelConfig = rawSubvalue == 31;
-                    cachedConfigValue = clearsChannelConfig ? 0 : rawSubvalue + 1;
-                    backendConfigValue = clearsChannelConfig ? 0 : rawSubvalue + 2;
-                    if (lane >= 0) {
-                        int localLane = lane + (4 * resourceEvent.trackIndex);
-                        logicalChannel = audioTarget ? localLane : resolveVoiceMap(voiceMap, localLane);
+                    clearWhenOutOfRange = rawSubvalue == 31;
+                    int localLane = lane + (4 * resourceEvent.trackIndex);
+                    if (audioTarget) {
+                        logicalChannel = localLane;
+                        channelDispatchEligible = true;
+                    } else {
+                        logicalChannel = resolveVoiceMap(voiceMap, localLane);
+                        channelDispatchEligible = logicalChannel >= 0 && logicalChannel < 16;
                     }
                 }
                 break;
@@ -829,9 +878,8 @@ public final class TimelineCompiler {
                 valueLow6,
                 value2x,
                 rawSubvalue,
-                clearsChannelConfig,
-                cachedConfigValue,
-                backendConfigValue));
+                channelDispatchEligible,
+                clearWhenOutOfRange));
     }
 
     private static PlaybackTimeline.ResourceCatalogEntry findActiveAdatByIndex(

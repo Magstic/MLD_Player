@@ -457,7 +457,7 @@ public final class MidiBridgeExporter {
                     entry.put("payloadHex", hex(chunk.payload));
                     if (chunk.payload.length > 0) {
                         entry.put("declaredAdatCount", Integer.valueOf(chunk.payload[0] & 0x3F));
-                        entry.put("newerParserAccepted", Boolean.valueOf((chunk.payload[0] & 0x40) == 0));
+                        entry.put("playbackParserAccepted", Boolean.valueOf((chunk.payload[0] & 0x40) == 0));
                     }
                 }
             } else if ("thrd".equals(catalog.chunkId)) {
@@ -501,8 +501,6 @@ public final class MidiBridgeExporter {
             entry.put("logicalChannel", Integer.valueOf(config.logicalChannel));
             entry.put("target", config.target);
             entry.put("rawSubvalue", Integer.valueOf(config.rawSubvalue));
-            entry.put("cachedValue", Integer.valueOf(config.cachedValue));
-            entry.put("backendValue", Integer.valueOf(config.backendValue));
             list.add(entry);
         }
         return list;
@@ -549,13 +547,8 @@ public final class MidiBridgeExporter {
                 entry.put("rawSubvalue", Integer.valueOf(resourceEvent.rawSubvalue));
             }
             if (resourceEvent.command == 0x90) {
-                entry.put("clearsChannelConfig", Boolean.valueOf(resourceEvent.clearsChannelConfig));
-                if (resourceEvent.cachedConfigValue >= 0) {
-                    entry.put("cachedConfigValue", Integer.valueOf(resourceEvent.cachedConfigValue));
-                }
-                if (resourceEvent.backendConfigValue >= 0) {
-                    entry.put("backendConfigValue", Integer.valueOf(resourceEvent.backendConfigValue));
-                }
+                entry.put("channelDispatchEligible", Boolean.valueOf(resourceEvent.channelDispatchEligible));
+                entry.put("clearWhenOutOfRange", Boolean.valueOf(resourceEvent.clearWhenOutOfRange));
             }
             list.add(entry);
         }

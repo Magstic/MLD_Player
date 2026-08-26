@@ -315,24 +315,18 @@ public final class PlaybackTimeline {
         public final int logicalChannel;
         public final String target;
         public final int rawSubvalue;
-        public final int cachedValue;
-        public final int backendValue;
 
         public InitialChannelConfig(
                 int chunkOffset,
                 int globalValue,
                 int logicalChannel,
                 String target,
-                int rawSubvalue,
-                int cachedValue,
-                int backendValue) {
+                int rawSubvalue) {
             this.chunkOffset = chunkOffset;
             this.globalValue = globalValue;
             this.logicalChannel = logicalChannel;
             this.target = target;
             this.rawSubvalue = rawSubvalue;
-            this.cachedValue = cachedValue;
-            this.backendValue = backendValue;
         }
     }
 
@@ -353,9 +347,8 @@ public final class PlaybackTimeline {
         public final int valueLow6;
         public final int value2x;
         public final int rawSubvalue;
-        public final boolean clearsChannelConfig;
-        public final int cachedConfigValue;
-        public final int backendConfigValue;
+        public final boolean channelDispatchEligible;
+        public final boolean clearWhenOutOfRange;
 
         public ResourceEventState(
                 int sourceTrack,
@@ -374,9 +367,8 @@ public final class PlaybackTimeline {
                 int valueLow6,
                 int value2x,
                 int rawSubvalue,
-                boolean clearsChannelConfig,
-                int cachedConfigValue,
-                int backendConfigValue) {
+                boolean channelDispatchEligible,
+                boolean clearWhenOutOfRange) {
             this.sourceTrack = sourceTrack;
             this.rawTick = rawTick;
             this.midiTick = midiTick;
@@ -393,9 +385,8 @@ public final class PlaybackTimeline {
             this.valueLow6 = valueLow6;
             this.value2x = value2x;
             this.rawSubvalue = rawSubvalue;
-            this.clearsChannelConfig = clearsChannelConfig;
-            this.cachedConfigValue = cachedConfigValue;
-            this.backendConfigValue = backendConfigValue;
+            this.channelDispatchEligible = channelDispatchEligible;
+            this.clearWhenOutOfRange = clearWhenOutOfRange;
         }
     }
 

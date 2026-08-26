@@ -321,6 +321,41 @@ Within the same phase and tick:
 - controls keep their collected source order
 - note ordering is stable by `(sourceTrack, sourceVoice)`
 
+## Resource-State Mapping
+
+`thrd`, `ainf`, `adat`, and live `0x7F` state remain outside the MIDI event stream.
+
+Initial `thrd` state preserves:
+
+- global config byte
+- target (`synth` / `audio`)
+- logical channel
+- raw selector
+
+The sound backend owns the config-table count and base. MLD conversion preserves the selector without resolving the external table entry.
+
+Active resource catalog:
+
+- active `adat` indices come from the contiguous resource-stage run beginning at `10 + header_length`
+- `ainf` low6 defines the required active count
+- each active entry preserves chunk offset, payload length, and active index
+
+Live resource state preserves:
+
+- `0x7F 00`: local lane, active `adat` index, linked active entry, live low6 parameter, doubled dispatch argument
+- `0x7F 01`: local lane and direct stop slot/index
+- `0x7F 80`: local audio lane, low6 level field, doubled dispatch argument
+- `0x7F 81`: local audio lane, low6 pan field, doubled dispatch argument
+- `0x7F 90`: local lane, target, raw selector, resolved logical channel, channel-dispatch eligibility, conditional out-of-range clear
+
+Layered families dispatch `0x7F 01/80/81` to audio backend vtable slots `+0x34/+0x38/+0x3C`. Monolithic `lib002/lib004` parse the same fields and reach fixed no-op stubs for these three commands. `0x7F 00` and `0x7F 90` retain native backend/state effects in both family groups.
+
+`0x7F 90` synth target uses the current voice assignment. Resolved channels `16..63` suppress native config dispatch.
+
+Selector `31` carries a clear condition when the external config-table count is `31` or lower. A table containing index `31` selects that entry.
+
+All resource-state entries produce zero MIDI messages.
+
 ## Non-Sounding Families
 
 The following families produce no sounding MIDI:
