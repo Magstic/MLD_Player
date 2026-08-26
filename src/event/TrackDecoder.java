@@ -342,7 +342,7 @@ public final class TrackDecoder {
         map.put(0x80, "resource_audio_level");
         map.put(0x81, "resource_audio_pan");
         map.put(0x90, "resource_channel_config");
-        map.put(0xF0, "resource_auxiliary");
+        map.put(0xF0, "resource_3d_auxiliary");
         return map;
     }
 }

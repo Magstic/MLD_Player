@@ -347,8 +347,12 @@ Live resource state preserves:
 - `0x7F 80`: local audio lane, low6 level field, doubled dispatch argument
 - `0x7F 81`: local audio lane, low6 pan field, doubled dispatch argument
 - `0x7F 90`: local lane, target, raw selector, resolved logical channel, channel-dispatch eligibility, conditional out-of-range clear
+- `0x7F F0`: 3D dispatch candidate, low5 helper argument, raw distance, transformed angle pair, raw duration, event-order native duration in milliseconds
+- `0x7F F1..FF`: decoded long-form envelope state
 
-Layered families dispatch `0x7F 01/80/81` to audio backend vtable slots `+0x34/+0x38/+0x3C`. Monolithic `lib002/lib004` parse the same fields and reach fixed no-op stubs for these three commands. `0x7F 00` and `0x7F 90` retain native backend/state effects in both family groups.
+`0x7F F0` has no MIDI lane field. Its MLD-side dispatch candidate requires track `0` and at least six body bytes. Distance scaling, config-table count, callback installation, and callback execution are backend-owned runtime state.
+
+Layered families dispatch `0x7F 01/80/81` to audio backend vtable slots `+0x34/+0x38/+0x3C`. Monolithic `lib002/lib004` parse the same fields and reach fixed no-op stubs for these three commands. `0x7F 00`, `0x7F 90`, and eligible `0x7F F0` retain native backend/state effects in both family groups.
 
 `0x7F 90` synth target uses the current voice assignment. Resolved channels `16..63` suppress native config dispatch.
 

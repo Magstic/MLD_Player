@@ -112,6 +112,7 @@ public final class TimelineCompiler {
         Map<Integer, ActiveNote> activeNotes = new LinkedHashMap<Integer, ActiveNote>();
         ChannelState[] channels = createChannelStates();
         SystemState systemState = new SystemState();
+        NativeTimingState nativeTimingState = new NativeTimingState(DEFAULT_TIMEBASE, DEFAULT_TEMPO);
         OutputLaneTracker outputLaneTracker = OutputLaneTracker.seededFreshDefaultPlayPath();
         int[] voiceMap = createIdentityVoiceMap(Math.max(16, file.trackCount * 4));
         ControlCollector controlCollector = new ControlCollector(mappedControls);
@@ -144,7 +145,8 @@ public final class TimelineCompiler {
                 ResourceEvent resourceEvent = (ResourceEvent) event;
                 long midiTick = mapper.rawToMidiTick(resourceEvent.rawTick);
                 totalMidiTicks = Math.max(totalMidiTicks, midiTick);
-                handleResourceEvent(resourceEvent, midiTick, resourceCatalog, resourceEvents, voiceMap, warnings, warningKeys);
+                handleResourceEvent(resourceEvent, midiTick, resourceCatalog, resourceEvents, voiceMap,
+                        nativeTimingState, warnings, warningKeys);
                 continue;
             }
             if (event instanceof SystemEvent) {
@@ -165,6 +167,7 @@ public final class TimelineCompiler {
                         ordinaryNativeControls,
                         warnings,
                         warningKeys);
+                applyNativeTimingState(nativeTimingState, systemEvent);
             }
         }
 
@@ -784,6 +787,7 @@ public final class TimelineCompiler {
             List<PlaybackTimeline.ResourceCatalogEntry> resourceCatalog,
             List<PlaybackTimeline.ResourceEventState> resourceEvents,
             int[] voiceMap,
+            NativeTimingState nativeTimingState,
             List<String> warnings,
             Set<String> warningKeys) {
         int lane = -1;
@@ -799,14 +803,18 @@ public final class TimelineCompiler {
         int rawSubvalue = -1;
         boolean channelDispatchEligible = false;
         boolean clearWhenOutOfRange = false;
-
-        if (resourceEvent.body.length >= 1) {
-            lane = (resourceEvent.body[0] >> 6) & 0x03;
-        }
+        boolean auxiliary3dDispatchCandidate = false;
+        int auxiliary3dLow5 = -1;
+        int auxiliary3dDistanceRaw = -1;
+        int auxiliary3dAngleA = -1;
+        int auxiliary3dAngleB = -1;
+        int auxiliary3dDurationRaw = -1;
+        int auxiliary3dDurationMs = -1;
 
         switch (resourceEvent.command) {
             case 0x00:
                 if (resourceEvent.body.length >= 1) {
+                    lane = (resourceEvent.body[0] >> 6) & 0x03;
                     resourceIndex = resourceEvent.body[0] & 0x3F;
                     logicalChannel = lane + (4 * resourceEvent.trackIndex);
                     extraParamLow6 = resourceEvent.body.length >= 2 ? resourceEvent.body[1] & 0x3F : 63;
@@ -827,6 +835,7 @@ public final class TimelineCompiler {
                 break;
             case 0x01:
                 if (resourceEvent.body.length >= 1) {
+                    lane = (resourceEvent.body[0] >> 6) & 0x03;
                     resourceIndex = resourceEvent.body[0] & 0x3F;
                     logicalChannel = lane + (4 * resourceEvent.trackIndex);
                 }
@@ -834,6 +843,7 @@ public final class TimelineCompiler {
             case 0x80:
             case 0x81:
                 if (resourceEvent.body.length >= 1) {
+                    lane = (resourceEvent.body[0] >> 6) & 0x03;
                     logicalChannel = lane + (4 * resourceEvent.trackIndex);
                     target = "audio";
                     valueLow6 = resourceEvent.body[0] & 0x3F;
@@ -843,6 +853,7 @@ public final class TimelineCompiler {
             case 0x90:
                 if (resourceEvent.body.length >= 1) {
                     int packed = resourceEvent.body[0] & 0xFF;
+                    lane = (packed >> 6) & 0x03;
                     boolean audioTarget = (packed & 0x20) != 0;
                     target = audioTarget ? "audio" : "synth";
                     rawSubvalue = packed & 0x1F;
@@ -855,6 +866,20 @@ public final class TimelineCompiler {
                         logicalChannel = resolveVoiceMap(voiceMap, localLane);
                         channelDispatchEligible = logicalChannel >= 0 && logicalChannel < 16;
                     }
+                }
+                break;
+            case 0xF0:
+                target = "3d";
+                if (resourceEvent.trackIndex == 0 && resourceEvent.body.length >= 6) {
+                    auxiliary3dDispatchCandidate = true;
+                    auxiliary3dLow5 = resourceEvent.body[0] & 0x1F;
+                    auxiliary3dDistanceRaw = resourceEvent.body[1] & 0xFF;
+                    auxiliary3dAngleA = decodeAuxiliary3dAngleA(resourceEvent.body[2] & 0xFF);
+                    auxiliary3dAngleB = decodeAuxiliary3dAngleB(resourceEvent.body[3] & 0xFF);
+                    auxiliary3dDurationRaw = ((resourceEvent.body[4] & 0xFF) << 8)
+                            | (resourceEvent.body[5] & 0xFF);
+                    auxiliary3dDurationMs = nativeDurationMilliseconds(
+                            auxiliary3dDurationRaw, nativeTimingState.timebase, nativeTimingState.tempo);
                 }
                 break;
             default:
@@ -879,7 +904,52 @@ public final class TimelineCompiler {
                 value2x,
                 rawSubvalue,
                 channelDispatchEligible,
-                clearWhenOutOfRange));
+                clearWhenOutOfRange,
+                auxiliary3dDispatchCandidate,
+                auxiliary3dLow5,
+                auxiliary3dDistanceRaw,
+                auxiliary3dAngleA,
+                auxiliary3dAngleB,
+                auxiliary3dDurationRaw,
+                auxiliary3dDurationMs));
+    }
+
+    private static int decodeAuxiliary3dAngleA(int raw) {
+        int angle = (3 * raw) - 384;
+        angle = clamp(-180, 180, angle);
+        return angle < 0 ? angle + 360 : angle;
+    }
+
+    private static int decodeAuxiliary3dAngleB(int raw) {
+        return clamp(-90, 90, (3 * raw) - 384);
+    }
+
+    private static int nativeDurationMilliseconds(int rawDuration, int timebase, int tempo) {
+        int timebaseQuotient = 15360000 / timebase;
+        int whole = timebaseQuotient / tempo;
+        int fraction = ((timebaseQuotient % tempo) << 8) / tempo;
+        int fractionProduct = fraction * rawDuration;
+        int wholeProduct = whole * rawDuration;
+        return ((fractionProduct >>> 8) + wholeProduct) >>> 8;
+    }
+
+    private static void applyNativeTimingState(NativeTimingState state, SystemEvent systemEvent) {
+        if (!isEffectiveTempoStateEvent(systemEvent)) {
+            return;
+        }
+        if (isTempo(systemEvent)) {
+            state.timebase = systemEvent.timebase;
+            state.tempo = clamp(MIN_TEMPO, MAX_TEMPO, systemEvent.value);
+            return;
+        }
+        if (systemEvent.command == 0xBC) {
+            state.tempo = clamp(MIN_TEMPO, MAX_TEMPO,
+                    state.tempo + (systemEvent.value & 0xFF) - 0x40);
+            return;
+        }
+        if (systemEvent.command == 0xBF) {
+            state.tempo = DEFAULT_TEMPO;
+        }
     }
 
     private static PlaybackTimeline.ResourceCatalogEntry findActiveAdatByIndex(
@@ -2357,6 +2427,16 @@ public final class TimelineCompiler {
                     return Integer.compare(left.data1, right.data1);
                 }
             };
+
+    private static final class NativeTimingState {
+        int timebase;
+        int tempo;
+
+        NativeTimingState(int timebase, int tempo) {
+            this.timebase = timebase;
+            this.tempo = tempo;
+        }
+    }
 
     private static final class RawTempoPoint {
         final int rawTick;

@@ -349,6 +349,13 @@ public final class PlaybackTimeline {
         public final int rawSubvalue;
         public final boolean channelDispatchEligible;
         public final boolean clearWhenOutOfRange;
+        public final boolean auxiliary3dDispatchCandidate;
+        public final int auxiliary3dLow5;
+        public final int auxiliary3dDistanceRaw;
+        public final int auxiliary3dAngleA;
+        public final int auxiliary3dAngleB;
+        public final int auxiliary3dDurationRaw;
+        public final int auxiliary3dDurationMs;
 
         public ResourceEventState(
                 int sourceTrack,
@@ -368,7 +375,14 @@ public final class PlaybackTimeline {
                 int value2x,
                 int rawSubvalue,
                 boolean channelDispatchEligible,
-                boolean clearWhenOutOfRange) {
+                boolean clearWhenOutOfRange,
+                boolean auxiliary3dDispatchCandidate,
+                int auxiliary3dLow5,
+                int auxiliary3dDistanceRaw,
+                int auxiliary3dAngleA,
+                int auxiliary3dAngleB,
+                int auxiliary3dDurationRaw,
+                int auxiliary3dDurationMs) {
             this.sourceTrack = sourceTrack;
             this.rawTick = rawTick;
             this.midiTick = midiTick;
@@ -387,6 +401,13 @@ public final class PlaybackTimeline {
             this.rawSubvalue = rawSubvalue;
             this.channelDispatchEligible = channelDispatchEligible;
             this.clearWhenOutOfRange = clearWhenOutOfRange;
+            this.auxiliary3dDispatchCandidate = auxiliary3dDispatchCandidate;
+            this.auxiliary3dLow5 = auxiliary3dLow5;
+            this.auxiliary3dDistanceRaw = auxiliary3dDistanceRaw;
+            this.auxiliary3dAngleA = auxiliary3dAngleA;
+            this.auxiliary3dAngleB = auxiliary3dAngleB;
+            this.auxiliary3dDurationRaw = auxiliary3dDurationRaw;
+            this.auxiliary3dDurationMs = auxiliary3dDurationMs;
         }
     }
 

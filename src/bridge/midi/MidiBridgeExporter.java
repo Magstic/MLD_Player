@@ -550,6 +550,17 @@ public final class MidiBridgeExporter {
                 entry.put("channelDispatchEligible", Boolean.valueOf(resourceEvent.channelDispatchEligible));
                 entry.put("clearWhenOutOfRange", Boolean.valueOf(resourceEvent.clearWhenOutOfRange));
             }
+            if (resourceEvent.command == 0xF0) {
+                entry.put("auxiliary3dDispatchCandidate", Boolean.valueOf(resourceEvent.auxiliary3dDispatchCandidate));
+                if (resourceEvent.auxiliary3dLow5 >= 0) {
+                    entry.put("auxiliary3dLow5", Integer.valueOf(resourceEvent.auxiliary3dLow5));
+                    entry.put("auxiliary3dDistanceRaw", Integer.valueOf(resourceEvent.auxiliary3dDistanceRaw));
+                    entry.put("auxiliary3dAngleA", Integer.valueOf(resourceEvent.auxiliary3dAngleA));
+                    entry.put("auxiliary3dAngleB", Integer.valueOf(resourceEvent.auxiliary3dAngleB));
+                    entry.put("auxiliary3dDurationRaw", Integer.valueOf(resourceEvent.auxiliary3dDurationRaw));
+                    entry.put("auxiliary3dDurationMs", Integer.valueOf(resourceEvent.auxiliary3dDurationMs));
+                }
+            }
             list.add(entry);
         }
         return list;

@@ -519,16 +519,61 @@ Extended validity:
 
 - other unhandled commands below `0x80` consume `1 + exst` body bytes
 - unhandled commands `0x80..0xEF` consume one body byte
-- `0x7F F0` is a separate long-form auxiliary family
-- `0x7F F1..FF` remain length-delimited valid grammar
+- `0x7F F0..FF` use a BE16 body length
 
-Universal real-time control subfamily:
+### `0x7F F0` 3D Auxiliary Event
 
-- `0x7F ?? 0x04 0x01`: master volume
-- `0x7F ?? 0x04 0x02`: master balance / pan
-- `0x7F ?? 0x04 0x03`: master fine tuning
-- `0x7F ?? 0x04 0x04`: master coarse tuning
-- `0x7F ?? 0x04 0x05`: constrained parameter pair
+Dispatch conditions:
+
+- track index `0`
+- body length at least `6`
+- the handler reads the first six body bytes
+- additional body bytes are consumed
+
+Body fields:
+
+| Offset | Field |
+| --- | --- |
+| `0` low5 | helper argument; unused by all five runtime families |
+| `1` | raw 3D distance input |
+| `2` | angle-A input |
+| `3` | angle-B input |
+| `4..5` | BE16 raw duration |
+
+Distance processing:
+
+- distance scale is backend-owned
+- the layered plugin reads `3DDISTANCE`; its default value is `128`
+- `scaledDistance = min(255, truncTowardZero(distanceScale * byte1 / 128))`
+- callback dispatch requires `scaledDistance < config_table_count` and an installed 3D callback
+
+Angle processing:
+
+- `angleA0 = clamp(3 * byte2 - 384, -180, 180)`
+- `angleA = angleA0 < 0 ? angleA0 + 360 : angleA0`
+- `angleB = clamp(3 * byte3 - 384, -90, 90)`
+
+Duration processing uses the active event-order tempo and timebase state:
+
+- `q = floor(15360000 / timebase)`
+- `whole = floor(q / tempo)`
+- `fraction = floor(((q mod tempo) * 256) / tempo)`
+- `durationMs = (((fraction * rawDuration) >>> 8) + whole * rawDuration) >>> 8`
+- arithmetic follows 32-bit runtime integer behavior
+
+The 3D callback receives a `0x28`-byte record:
+
+| Offset | Value |
+| --- | --- |
+| `0x00` | `0x28` |
+| `0x04` | `scaledDistance + 2` |
+| `0x08` | backend timing/value query result |
+| `0x0C` | `durationMs` |
+| `0x10` | double `scaledDistance * 0.05` |
+| `0x18` | double `angleA` |
+| `0x20` | double `angleB` |
+
+`0x7F F1..FF` consume their BE16-length bodies and have no runtime action in all five runtime families.
 
 ## Machine-Dependent Families
 
