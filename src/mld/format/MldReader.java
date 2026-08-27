@@ -46,6 +46,19 @@ public final class MldReader {
         }
 
         long sizeField = readBe32(data, 4);
+        long logicalEndLong = sizeField + 8L;
+        if (logicalEndLong < 13L) {
+            throw new IOException("Declared MLD size ends before fixed header");
+        }
+        if (logicalEndLong > data.length) {
+            throw new IOException(
+                    "Truncated MLD container: declared end 0x"
+                            + Long.toHexString(logicalEndLong)
+                            + " exceeds physical length 0x"
+                            + Integer.toHexString(data.length));
+        }
+        int logicalEnd = (int) logicalEndLong;
+
         int headerLength = readBe16(data, 8);
         int majorType = data[10] & 0xFF;
         int minorType = data[11] & 0xFF;
@@ -60,8 +73,8 @@ public final class MldReader {
         List<TopLevelChunk> topLevelChunks = new ArrayList<TopLevelChunk>();
         List<TrackChunk> tracks = new ArrayList<TrackChunk>();
 
-        while (offset < data.length) {
-            if (offset + 4 > data.length) {
+        while (offset < logicalEnd) {
+            if (offset + 4 > logicalEnd) {
                 throw new IOException("Truncated top-level chunk id at 0x" + Integer.toHexString(offset));
             }
 
@@ -74,13 +87,13 @@ public final class MldReader {
             int payloadLength;
             int payloadStart;
             if (chunkSpec.lengthFieldBytes == 2) {
-                if (offset + 6 > data.length) {
+                if (offset + 6 > logicalEnd) {
                     throw new IOException("Truncated top-level chunk header at 0x" + Integer.toHexString(offset));
                 }
                 payloadLength = readBe16(data, offset + 4);
                 payloadStart = offset + 6;
             } else {
-                if (offset + 8 > data.length) {
+                if (offset + 8 > logicalEnd) {
                     throw new IOException("Truncated top-level chunk header at 0x" + Integer.toHexString(offset));
                 }
                 payloadLength = (int) readBe32(data, offset + 4);
@@ -88,7 +101,7 @@ public final class MldReader {
             }
 
             int payloadEnd = payloadStart + payloadLength;
-            ensureRange(data.length, payloadStart, payloadEnd, "top-level chunk " + chunkId);
+            ensureRange(logicalEnd, payloadStart, payloadEnd, "top-level chunk " + chunkId);
 
             byte[] payload = Arrays.copyOfRange(data, payloadStart, payloadEnd);
             String decodedText = decodeTextIfUseful(chunkId, payload);

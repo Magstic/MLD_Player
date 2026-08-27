@@ -2,6 +2,7 @@ package mld.format;
 
 import java.io.ByteArrayOutputStream;
 import java.io.DataOutputStream;
+import java.io.IOException;
 import java.lang.reflect.Field;
 import java.lang.reflect.Modifier;
 import java.nio.charset.StandardCharsets;
@@ -20,6 +21,12 @@ public final class FormatDecodeFoundationAudit {
     public static void main(String[] args) throws Exception {
         byte[] source=fixture(); MldDocument document=new MldReader().read(source);
         eq("magic","melo",document.magic); eq("track count",1,document.trackCount); eq("parsed track count",1,document.tracks.size());
+        byte[] trailingSource=append(source,new byte[]{0,0,(byte)0xB1,(byte)0x94,0,0,0,1,0x0D,0,0,0x07,(byte)0xD0,(byte)0xFF,(byte)0xD8,(byte)0xFF,(byte)0xE0,0,0x10});
+        MldDocument trailingDocument=new MldReader().read(trailingSource);
+        eq("trailing bytes ignored",document.topLevelChunks.size(),trailingDocument.topLevelChunks.size()); eq("trailing raw bytes retained",trailingSource.length,trailingDocument.rawLength());
+        expectReadFailure("declared size before fixed header",withDeclaredSize(source,4));
+        expectReadFailure("declared size beyond physical EOF",withDeclaredSize(source,(source.length-8)+1));
+        expectReadFailure("chunk may not cross logical end",withDeclaredSize(source,(source.length-8)-1));
         eq("first note chunk wins",1,document.noteExtraBytes); eq("info chunk view",4,document.infoChunks().size()); eq("last title text","Second",clean(document.lastInfoText("titl")));
         byte originalMagic=document.copyRawBytes()[0]; source[0]=0; eq("input mutation isolation",originalMagic&0xFF,document.copyRawBytes()[0]&0xFF);
         byte[] rawCopy=document.copyRawBytes(); rawCopy[0]=0; eq("raw copy isolation",originalMagic&0xFF,document.copyRawBytes()[0]&0xFF);
@@ -32,6 +39,9 @@ public final class FormatDecodeFoundationAudit {
         System.out.println("FormatDecodeFoundationAudit: PASS");
     }
     private static byte[] fixture() throws Exception { ByteArrayOutputStream chunks=new ByteArrayOutputStream(); DataOutputStream out=new DataOutputStream(chunks); writeBe16Chunk(out,"titl","First".getBytes(StandardCharsets.US_ASCII)); writeBe16Chunk(out,"titl","Second".getBytes(StandardCharsets.US_ASCII)); writeBe16Chunk(out,"note",new byte[]{0,1}); writeBe16Chunk(out,"note",new byte[]{0,2}); writeBe16Chunk(out,"cuep",new byte[]{0,0,0,0}); writeBe32Chunk(out,"trac",new byte[]{0,0x7F,(byte)0x80,0x55,0,(byte)0xFF,(byte)0xFF,0,2,0x71,(byte)0x84,0,(byte)0xFF,(byte)0xDF,0}); out.flush(); byte[] cb=chunks.toByteArray(); ByteArrayOutputStream fb=new ByteArrayOutputStream(); DataOutputStream f=new DataOutputStream(fb); f.writeBytes("melo"); f.writeInt(5+cb.length); f.writeShort(0); f.writeByte(1); f.writeByte(1); f.writeByte(1); f.write(cb); f.flush(); return fb.toByteArray(); }
+    private static byte[] append(byte[] source,byte[] trailing){byte[] result=new byte[source.length+trailing.length];System.arraycopy(source,0,result,0,source.length);System.arraycopy(trailing,0,result,source.length,trailing.length);return result;}
+    private static byte[] withDeclaredSize(byte[] source,int size){byte[] result=source.clone();result[4]=(byte)(size>>>24);result[5]=(byte)(size>>>16);result[6]=(byte)(size>>>8);result[7]=(byte)size;return result;}
+    private static void expectReadFailure(String label,byte[] source)throws Exception{try{new MldReader().read(source);fail(label,"expected IOException");}catch(IOException expected){}}
     private static void writeBe16Chunk(DataOutputStream out,String id,byte[] payload)throws Exception{out.writeBytes(id);out.writeShort(payload.length);out.write(payload);} private static void writeBe32Chunk(DataOutputStream out,String id,byte[] payload)throws Exception{out.writeBytes(id);out.writeInt(payload.length);out.write(payload);}
     private static String clean(String value){return value==null?null:value.replace("\u0000","").trim();}
     private static <T extends TrackEvent> T require(List<TrackEvent> events,int index,Class<T> type){TrackEvent event=events.get(index);if(!type.isInstance(event))fail("event type","expected "+type.getSimpleName()+" at "+index+", got "+event.getClass().getSimpleName());return type.cast(event);}
