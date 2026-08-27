@@ -1,6 +1,7 @@
 # MLD (MFi) Player
+[![DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/Magstic/MLD_Player)
 
-MLD Player, plays MLD(MFi) melody via MIDI stream.
+MLD Player, plays MLD(MFi) melody via MIDI stream. 
 
 ---
 
