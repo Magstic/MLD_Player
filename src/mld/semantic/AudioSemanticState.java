@@ -86,14 +86,15 @@ final class AudioSemanticState {
         actions.add(action);
         apply(action);
 
-        if (action.kind == AudioProgram.ActionKind.RESOURCE_START) {
+        if (action.kind == AudioProgram.ActionKind.RESOURCE_START
+                && action.rendererSupport != AudioProgram.RendererSupport.VERIFIED_8001_4BIT) {
             diagnostics.add(new Diagnostic(
                     "AUDIO_RENDERER_RESOURCE_ADAT_UNSUPPORTED",
                     Diagnostic.Severity.UNSUPPORTED,
                     event.trackIndex,
                     event.eventIndex,
                     event.rawTick,
-                    "Top-level active-adat resource semantics are recognized; production renderer support is not implemented."));
+                    "Top-level active-adat resource is recognized but is outside the verified 0x8001 4-bit renderer profile."));
         }
         if (action.kind == AudioProgram.ActionKind.CONFIG_SELECT) {
             diagnostics.add(new Diagnostic(
@@ -175,7 +176,9 @@ final class AudioSemanticState {
                     state.levelPhaseGated,
                     state.panKnown,
                     state.pan,
-                    state.panPhaseGated));
+                    state.panPhaseGated,
+                    state.routeKnown,
+                    state.route));
         }
 
         List<AudioProgram.SlotState> slotSnapshots = new ArrayList<AudioProgram.SlotState>();
@@ -216,11 +219,37 @@ final class AudioSemanticState {
         int value = -1;
         int slot = -1;
         AudioProgram.AudioType type = AudioProgram.AudioType.NONE;
+        int sampleRate = -1;
+        int codedBits = -1;
+        int channelCount = -1;
+        int durationByteCount = -1;
+        long durationMs = -1L;
         switch (state.command) {
             case 0x00:
                 kind = AudioProgram.ActionKind.RESOURCE_START;
+                value = state.extraParam2x;
                 type = AudioProgram.AudioType.RESOURCE_ADAT;
                 support = AudioProgram.RendererSupport.RECOGNIZED_UNSUPPORTED;
+                AudioProgram.ResourceCatalogEntry entry = catalogEntry(state.linkedCatalogIndex);
+                if (entry != null && entry.sampledResource != null) {
+                    AudioProgram.SampledResource resource = entry.sampledResource;
+                    type = resource.audioType;
+                    sampleRate = resource.sampleRate;
+                    codedBits = resource.codedBits;
+                    channelCount = resource.channelCount;
+                    durationByteCount = resource.encodedPayloadLength();
+                    if (sampleRate > 0 && codedBits > 0 && channelCount > 0) {
+                        durationMs = ((long)durationByteCount * 8000L)
+                                / ((long)sampleRate * codedBits * channelCount);
+                    }
+                    if (type == AudioProgram.AudioType.MFI_8001
+                            && (resource.selectorFlags & 0x04) == 0
+                            && codedBits == 4
+                            && (sampleRate == 8000 || sampleRate == 16000 || sampleRate == 32000)
+                            && (channelCount == 1 || channelCount == 2)) {
+                        support = AudioProgram.RendererSupport.VERIFIED_8001_4BIT;
+                    }
+                }
                 break;
             case 0x01:
                 kind = AudioProgram.ActionKind.RESOURCE_STOP;
@@ -235,8 +264,13 @@ final class AudioSemanticState {
                 value = state.value2x;
                 break;
             case 0x90:
-                kind = AudioProgram.ActionKind.CONFIG_SELECT;
-                value = state.rawSubvalue;
+                if ("audio".equals(state.target)) {
+                    kind = AudioProgram.ActionKind.CHANNEL_ROUTE;
+                    value = state.clearWhenOutOfRange ? 0 : state.rawSubvalue + 2;
+                } else {
+                    kind = AudioProgram.ActionKind.CONFIG_SELECT;
+                    value = state.rawSubvalue;
+                }
                 break;
             default:
                 return null;
@@ -257,16 +291,18 @@ final class AudioSemanticState {
                 type,
                 -1,
                 -1,
+                sampleRate,
+                codedBits,
+                channelCount,
                 -1,
-                -1,
-                -1,
-                -1,
-                -1,
-                -1L,
+                durationByteCount,
+                durationMs,
                 value,
                 false,
                 false,
-                state.channelDispatchEligible || kind != AudioProgram.ActionKind.CONFIG_SELECT,
+                state.channelDispatchEligible
+                        || (kind != AudioProgram.ActionKind.CONFIG_SELECT
+                        && kind != AudioProgram.ActionKind.CHANNEL_ROUTE),
                 support,
                 AudioProgram.BranchEffect.BACKEND_ACTION,
                 monolithicResourceEffect(kind),
@@ -277,7 +313,8 @@ final class AudioSemanticState {
         if (kind == AudioProgram.ActionKind.RESOURCE_START) {
             return AudioProgram.BranchEffect.BACKEND_ACTION;
         }
-        if (kind == AudioProgram.ActionKind.CONFIG_SELECT) {
+        if (kind == AudioProgram.ActionKind.CONFIG_SELECT
+                || kind == AudioProgram.ActionKind.CHANNEL_ROUTE) {
             return AudioProgram.BranchEffect.STATE_ONLY;
         }
         return AudioProgram.BranchEffect.NO_ACTION;
@@ -296,6 +333,12 @@ final class AudioSemanticState {
             state.panKnown = true;
             state.pan = action.value;
             state.panPhaseGated = action.phaseGated;
+            return;
+        }
+        if (action.kind == AudioProgram.ActionKind.CHANNEL_ROUTE && action.logicalChannel >= 0) {
+            MutableChannelState state = channel(action.logicalChannel);
+            state.routeKnown = true;
+            state.route = action.value;
             return;
         }
         if (action.kind == AudioProgram.ActionKind.CONFIG_SELECT && action.logicalChannel >= 0) {
@@ -337,6 +380,14 @@ final class AudioSemanticState {
             if (state.sourceTrack == sourceTrack && state.rawTick == rawTick) {
                 return state;
             }
+        }
+        return null;
+    }
+
+    private AudioProgram.ResourceCatalogEntry catalogEntry(int catalogIndex) {
+        if (catalogIndex < 0) return null;
+        for (AudioProgram.ResourceCatalogEntry entry : catalog) {
+            if (entry.catalogIndex == catalogIndex) return entry;
         }
         return null;
     }
@@ -399,6 +450,8 @@ final class AudioSemanticState {
         boolean panKnown;
         int pan;
         boolean panPhaseGated;
+        boolean routeKnown;
+        int route;
 
         MutableChannelState(int logicalChannel) {
             this.logicalChannel = logicalChannel;

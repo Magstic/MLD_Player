@@ -6,8 +6,10 @@ import java.util.List;
 
 import mld.semantic.LoopModel;
 
-/** Immutable decoded sampled-audio voice schedule used by offline and transport rendering. */
+/** Immutable exact sampled-audio voice schedule used by offline and transport rendering. */
 public final class AudioPlaybackSource {
+    public static final int NATIVE_SAMPLE_RATE = 32000;
+
     private final int sampleRate;
     private final long semanticEndFrame;
     private final LoopModel loop;
@@ -25,8 +27,8 @@ public final class AudioPlaybackSource {
             long loopStartMicros,
             long loopEndMicros,
             List<Voice> voices) {
-        if (sampleRate <= 0) {
-            throw new IllegalArgumentException("sampleRate <= 0");
+        if (sampleRate != NATIVE_SAMPLE_RATE) {
+            throw new IllegalArgumentException("legacy sampled mix rate must be 32000 Hz");
         }
         this.sampleRate = sampleRate;
         this.semanticEndFrame = microsToFrameCeil(semanticEndMicros, sampleRate);
@@ -40,7 +42,7 @@ public final class AudioPlaybackSource {
         this.voices = Collections.unmodifiableList(new ArrayList<Voice>(voices));
         long end = Math.max(1L, semanticEndFrame);
         for (Voice voice : voices) {
-            end = Math.max(end, safeAdd(voice.startFrame, voice.pcm16.length));
+            end = Math.max(end, safeAdd(voice.startFrame, voice.resource.getFrameCount()));
         }
         this.linearFrameCount = end;
     }
@@ -61,7 +63,7 @@ public final class AudioPlaybackSource {
         if (linearFrameCount > (Integer.MAX_VALUE / 2L) - 8L) {
             throw new IllegalArgumentException("rendered MLD PCM is too large");
         }
-        int frames = (int) Math.max(1L, linearFrameCount);
+        int frames = (int)Math.max(1L, linearFrameCount);
         int[] left = new int[frames];
         int[] right = new int[frames];
         for (Voice voice : voices) {
@@ -92,14 +94,36 @@ public final class AudioPlaybackSource {
     static final class Voice {
         final long startMicros;
         final long startFrame;
-        final short[] pcm16;
+        final DecodedSampledResource resource;
+        final GainSegment[] gainSegments;
+
+        Voice(
+                long startMicros,
+                long startFrame,
+                DecodedSampledResource resource,
+                List<GainSegment> gainSegments) {
+            if (resource == null) throw new IllegalArgumentException("resource == null");
+            if (gainSegments == null || gainSegments.isEmpty()) {
+                throw new IllegalArgumentException("gainSegments is empty");
+            }
+            this.startMicros = Math.max(0L, startMicros);
+            this.startFrame = Math.max(0L, startFrame);
+            this.resource = resource;
+            this.gainSegments = gainSegments.toArray(new GainSegment[gainSegments.size()]);
+            if (this.gainSegments[0].sourceFrame != 0) {
+                throw new IllegalArgumentException("first gain segment must start at source frame 0");
+            }
+        }
+    }
+
+    static final class GainSegment {
+        final int sourceFrame;
         final int leftGain;
         final int rightGain;
 
-        Voice(long startMicros, long startFrame, short[] pcm16, int leftGain, int rightGain) {
-            this.startMicros = Math.max(0L, startMicros);
-            this.startFrame = Math.max(0L, startFrame);
-            this.pcm16 = pcm16;
+        GainSegment(int sourceFrame, int leftGain, int rightGain) {
+            if (sourceFrame < 0) throw new IllegalArgumentException("sourceFrame < 0");
+            this.sourceFrame = sourceFrame;
             this.leftGain = leftGain;
             this.rightGain = rightGain;
         }
@@ -112,36 +136,70 @@ public final class AudioPlaybackSource {
             long chunkEndFrame,
             Voice voice,
             long instanceStartFrame) {
-        long voiceEnd = safeAdd(instanceStartFrame, voice.pcm16.length);
+        long voiceEnd = safeAdd(instanceStartFrame, voice.resource.getFrameCount());
         long overlapStart = Math.max(chunkStartFrame, instanceStartFrame);
         long overlapEnd = Math.min(chunkEndFrame, voiceEnd);
-        if (overlapStart >= overlapEnd) {
-            return;
-        }
-        int sourceIndex = (int) (overlapStart - instanceStartFrame);
-        int targetIndex = (int) (overlapStart - chunkStartFrame);
-        int count = (int) (overlapEnd - overlapStart);
+        if (overlapStart >= overlapEnd) return;
+
+        int sourceIndex = (int)(overlapStart - instanceStartFrame);
+        int targetIndex = (int)(overlapStart - chunkStartFrame);
+        int count = (int)(overlapEnd - overlapStart);
+        int segmentIndex = gainSegmentAt(voice.gainSegments, sourceIndex);
+        GainSegment segment = voice.gainSegments[segmentIndex];
         for (int i = 0; i < count; i++) {
-            int sample = voice.pcm16[sourceIndex + i];
-            left[targetIndex + i] = saturatingAdd(
-                    left[targetIndex + i], MfiAudioMixer.applySample(sample, voice.leftGain));
-            right[targetIndex + i] = saturatingAdd(
-                    right[targetIndex + i], MfiAudioMixer.applySample(sample, voice.rightGain));
+            int sourceFrame = sourceIndex + i;
+            while (segmentIndex + 1 < voice.gainSegments.length
+                    && voice.gainSegments[segmentIndex + 1].sourceFrame <= sourceFrame) {
+                segment = voice.gainSegments[++segmentIndex];
+            }
+            int mixedLeft = MfiAudioMixer.applyVoiceGain(
+                    voice.resource.leftAt(sourceFrame), segment.leftGain);
+            int mixedRight = MfiAudioMixer.applyVoiceGain(
+                    voice.resource.rightAt(sourceFrame), segment.rightGain);
+            left[targetIndex + i] += mixedLeft;
+            right[targetIndex + i] += mixedRight;
         }
     }
 
-    static byte[] interleavedBytes(int[] left, int[] right) {
-        byte[] bytes = new byte[left.length * 4];
-        for (int frame = 0; frame < left.length; frame++) {
-            short l = (short) clamp(left[frame], -32768, 32767);
-            short r = (short) clamp(right[frame], -32768, 32767);
+    private static int gainSegmentAt(GainSegment[] segments, int sourceFrame) {
+        int low = 0;
+        int high = segments.length - 1;
+        while (low < high) {
+            int mid = (low + high + 1) >>> 1;
+            if (segments[mid].sourceFrame <= sourceFrame) low = mid;
+            else high = mid - 1;
+        }
+        return low;
+    }
+
+    static byte[] interleavedBytes(int[] routeLeft, int[] routeRight) {
+        byte[] bytes = new byte[routeLeft.length * 4];
+        for (int frame = 0; frame < routeLeft.length; frame++) {
+            short l = quantizeRoute0(routeLeft[frame]);
+            short r = quantizeRoute0(routeRight[frame]);
             int offset = frame * 4;
-            bytes[offset] = (byte) (l & 0xFF);
-            bytes[offset + 1] = (byte) ((l >>> 8) & 0xFF);
-            bytes[offset + 2] = (byte) (r & 0xFF);
-            bytes[offset + 3] = (byte) ((r >>> 8) & 0xFF);
+            bytes[offset] = (byte)(l & 0xFF);
+            bytes[offset + 1] = (byte)((l >>> 8) & 0xFF);
+            bytes[offset + 2] = (byte)(r & 0xFF);
+            bytes[offset + 3] = (byte)((r >>> 8) & 0xFF);
         }
         return bytes;
+    }
+
+    private StereoPcm stereo(int[] routeLeft, int[] routeRight) {
+        short[] interleaved = new short[routeLeft.length * 2];
+        for (int frame = 0; frame < routeLeft.length; frame++) {
+            interleaved[frame * 2] = quantizeRoute0(routeLeft[frame]);
+            interleaved[frame * 2 + 1] = quantizeRoute0(routeRight[frame]);
+        }
+        return new StereoPcm(sampleRate, interleaved);
+    }
+
+    /** plugin route0 <<2, SoundLib arithmetic >>8, then legacy +/-32767 clamp. */
+    static short quantizeRoute0(int routeSample) {
+        int bus = routeSample << 2;
+        int shifted = bus >> 8;
+        return (short)clamp(shifted, -32767, 32767);
     }
 
     static long microsToFrameFloor(long micros, int sampleRate) {
@@ -178,22 +236,6 @@ public final class AudioPlaybackSource {
         long micros = whole * 1000000L;
         long fractional = remainder * 1000000L;
         return micros + (fractional + sampleRate - 1L) / sampleRate;
-    }
-
-    private StereoPcm stereo(int[] left, int[] right) {
-        short[] interleaved = new short[left.length * 2];
-        for (int frame = 0; frame < left.length; frame++) {
-            interleaved[frame * 2] = (short) clamp(left[frame], -32768, 32767);
-            interleaved[frame * 2 + 1] = (short) clamp(right[frame], -32768, 32767);
-        }
-        return new StereoPcm(sampleRate, interleaved);
-    }
-
-    static int saturatingAdd(int left, int right) {
-        long value = (long) left + right;
-        if (value > Integer.MAX_VALUE) return Integer.MAX_VALUE;
-        if (value < Integer.MIN_VALUE) return Integer.MIN_VALUE;
-        return (int) value;
     }
 
     static int clamp(int value, int min, int max) {

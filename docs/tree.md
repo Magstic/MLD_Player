@@ -12,7 +12,9 @@ src/
   midi/         MidiProjector, MidiPlan  — host MIDI projection
                 MidiLoopMaterializer      — bounded playback loop plan expansion
                 MidiSequenceEncoder       — sole MidiPlan -> Sequence serializer
-  audio/        MfiG726Decoder            — verified 0x8001 4-bit G.721/G.726
+  audio/        MfiG726Decoder            — verified 4-bit G.721/G.726 core
+                Mfi8001Decoder            — exact 0x8001 codec/output pipeline
+                DecodedSampledResource    — immutable 32-kHz int32 stereo cache
                 MfiAudioMixer             — official gain/pan fixed-point rules
                 AudioRenderer, StereoPcm  — verified offline stereo PCM output
                 AudioPlaybackSource       — decoded voice schedule for transport
@@ -35,6 +37,6 @@ src/
                 SwingPlayerController/View      — GUI orchestration / widget presentation
                 PlaylistState                   — GUI playlist state
 src_test/       test-only regression / integration / architecture sources
-docs/           spec reference + architecture + refactoring plan
+docs/           canonical specs
 tools/          probe script
 ```

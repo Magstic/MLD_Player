@@ -104,6 +104,8 @@ final class AudioState {
                 }
             }
 
+            byte[] chunkPayload = chunk.copyPayload();
+            AudioProgram.SampledResource sampledResource = buildSampledResource(legacy, chunkPayload);
             entries.add(new AudioProgram.ResourceCatalogEntry(
                     catalogIndex++,
                     chunk.id,
@@ -119,7 +121,8 @@ final class AudioState {
                     legacy != null ? legacy.adpmByte0 : -1,
                     legacy != null ? legacy.adpmByte1 : -1,
                     legacy != null ? legacy.adpmByte2Low3 : -1,
-                    legacy != null ? legacy.adpmByte2Bit3 : -1));
+                    legacy != null ? legacy.adpmByte2Bit3 : -1,
+                    sampledResource));
         }
         return entries;
     }
@@ -420,6 +423,28 @@ final class AudioState {
                 adpmByte1,
                 adpmByte2Low3,
                 adpmByte2Bit3);
+    }
+
+    private static AudioProgram.SampledResource buildSampledResource(
+            LegacySelectorSummary legacy, byte[] payload) {
+        if (legacy == null || legacy.selectorId != 0x81
+                || legacy.adpmByte0 < 0 || legacy.adpmByte1 < 0 || legacy.adpmByte2Low3 < 0) {
+            return null;
+        }
+        int selectorEnd = 2 + legacy.selectorHeaderLength;
+        if (selectorEnd < 0 || selectorEnd > payload.length) {
+            return null;
+        }
+        byte[] encoded = new byte[payload.length - selectorEnd];
+        System.arraycopy(payload, selectorEnd, encoded, 0, encoded.length);
+        return new AudioProgram.SampledResource(
+                AudioProgram.AudioType.MFI_8001,
+                legacy.selectorId,
+                legacy.selectorFlags,
+                legacy.adpmByte0 * 1000,
+                legacy.adpmByte1,
+                legacy.adpmByte2Low3,
+                encoded);
     }
 
     private static int decodeAuxiliary3dAngleA(int raw) {

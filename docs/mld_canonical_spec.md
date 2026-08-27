@@ -217,6 +217,19 @@ On-disk contract:
   independently, then uses them as left and right
 - backend-native working format is fixed `32000 Hz`, `32-bit`, `2-channel`
 
+Production ordinary sampled-SFX profile:
+
+- active top-level `adat` selected through `ainf`
+- selector `0x81`
+- selector flag `0x04` clear
+- coded bit depth `4`
+- sample rate `8000`, `16000`, or `32000`
+- channel count `1` or `2`
+- output route `0`
+- final stream `32000 Hz`, PCM16, stereo
+
+`7F:00` starts the typed resource. `7F:80` and `7F:81` update its logical-channel level and pan. `7F:90` selects its sampled route.
+
 ## Track Event Stream
 
 Each `trac` payload is an event stream.
@@ -453,7 +466,7 @@ Playback members:
 - `0x7F 01`: resource stop slot; layered backend dispatch
 - `0x7F 80`: audio channel level; layered backend dispatch
 - `0x7F 81`: audio channel pan; layered backend dispatch
-- `0x7F 90`: persistent per-channel config
+- `0x7F 90`: synth config / sampled route selection
 
 Channel calculation:
 
@@ -497,22 +510,24 @@ Short-form payload layouts:
   - one-byte compact payload
   - high 2 bits = local lane
   - bit `5` = target (`0` = synth, `1` = audio)
-  - low 5 bits = config selector `0..31`
+  - low 5 bits = selector `0..31`
   - synth target resolves the local lane through the current voice assignment
   - synth config dispatch requires resolved channel `< 16`
+  - synth selector `< config_table_count`: select `config_table_base + selector`
+  - layered synth dispatch encodes the accepted selector as `selector + 2`
+  - monolithic synth dispatch writes the selected config-slot pointer
+  - synth selector `31` clears an out-of-range target config slot
   - audio target uses `trackIndex * 4 + localLane`
-  - selector `< config_table_count`: select `config_table_base + selector`
-  - layered helper dispatch also encodes accepted selector as `selector + 2`
-  - monolithic helper writes the selected config-slot pointer directly
-  - selector `31` with `31 >= config_table_count`: clear target config slot
-  - other out-of-range selectors produce no config action
+  - audio selector `0..30` selects sampled route `selector + 2`
+  - audio selector `31` restores sampled route `0`
 
-Startup config relationship:
+Config and route relationship:
 
-- `thrd` records and live `0x7F 90` use the same synth/audio config-slot families
-- both resolve selectors through the external config table
+- `thrd` records seed synth/audio config-slot families
+- live synth-target `0x7F 90` resolves through the external config table
+- live audio-target `0x7F 90` updates sampled route state
 - `thrd` out-of-range selectors produce no config action
-- live selector `31` adds the out-of-range clear case
+- live synth selector `31` adds the out-of-range clear case
 
 Extended validity:
 
@@ -697,7 +712,7 @@ Native duration:
 
 Layered families perform audio backend load/release/start calls. Monolithic families maintain the corresponding slot caches without these audio backend calls.
 
-Production PCM renderer scope is intentionally narrower than semantic recognition. The currently verified renderer profile is descriptor index `23` (`71 84`) with operation `1`, flags byte `0`, mono, a structurally valid counted payload, and 4-bit format `5`, `13`, or `21`. Other recognized `0x8001` forms remain typed evidence with explicit unsupported renderer status. See `mld_audio_reverse_evidence.md`.
+The machine-dependent production profile is descriptor index `23` (`71 84`) with operation `1`, flags byte `0`, mono, a structurally valid counted payload, and 4-bit format `5`, `13`, or `21`. Other recognized machine-dependent `0x8001` forms retain explicit unsupported renderer status. The ordinary active-`adat` production profile is defined under selector `0x81`.
 
 ### Compact `0x8002` Load State
 

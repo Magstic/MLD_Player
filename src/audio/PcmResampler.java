@@ -1,6 +1,6 @@
 package audio;
 
-/** Band-limited mono PCM16 resampler intended for build-time MLD rendering. */
+/** Band-limited PCM16 helper used only for explicit host output-rate conversion. */
 public final class PcmResampler {
     private static final int RADIUS = 16; // 32-tap windowed-sinc kernel.
     private static final double NYQUIST_GUARD = 0.94;
@@ -9,8 +9,8 @@ public final class PcmResampler {
 
     /**
      * Resamples a mono PCM16 signal with a guarded low-pass kernel. Equal-rate
-     * input is returned as a clone without filtering; native sampled-audio output is not
-     * modified unless the caller explicitly requests a different rate.
+     * input is returned as a clone without filtering. This helper is not an owner for
+     * either legacy MFiAudio internal rate-conversion stage.
      */
     public static short[] resampleMono(short[] input, int inputRate, int outputRate) {
         if (input == null) throw new IllegalArgumentException("input == null");

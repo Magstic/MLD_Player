@@ -33,6 +33,7 @@ public final class ArchitectureClosureAudit {
         auditPackagePaths(sourceRoot, sources);
         auditDependencies(sourceRoot, sources);
         auditSemanticBoundary(sourceRoot);
+        auditAudioOwnership(sourceRoot, sources);
         auditSingleMidiSerializer(sourceRoot, sources);
         auditExportOwnership(sourceRoot, sources);
         auditDeviceOwnership(sourceRoot, sources);
@@ -122,6 +123,25 @@ public final class ArchitectureClosureAudit {
                     fail("semantic boundary violation in " + unix(source) + ": " + forbidden);
                 }
             }
+        }
+    }
+
+    private static void auditAudioOwnership(Path sourceRoot, List<Path> sources) throws IOException {
+        assertExclusiveToken(
+                sourceRoot, sources,
+                "MfiG726Decoder.decode4BitLittleEndian",
+                "audio/Mfi8001Decoder.java");
+        assertExclusiveToken(
+                sourceRoot, sources,
+                "new DecodedSampledResource(",
+                "audio/Mfi8001Decoder.java");
+        String renderer = read(sourceRoot.resolve("audio/AudioRenderer.java"));
+        if (renderer.contains("MldDocument") || renderer.contains("rawBytes")) {
+            fail("AudioRenderer must consume semantic sampled resources, not raw MLD container bytes");
+        }
+        String playback = read(sourceRoot.resolve("audio/AudioPlaybackSource.java"));
+        if (playback.contains("short[] pcm16")) {
+            fail("AudioPlaybackSource regressed to the obsolete mono PCM16 voice cache");
         }
     }
 

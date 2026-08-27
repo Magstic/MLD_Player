@@ -50,21 +50,18 @@ public final class MfiAudioMixer {
 
     private MfiAudioMixer() {}
 
-    public static int gainCoefficient(int trackVolume, int noteLevel,
-            int partVolume, int globalVolume) {
-        int gain = GAIN[clamp7(trackVolume)];
-        gain = multiplyQ16(gain, GAIN[clamp7(noteLevel)]);
-        gain = multiplyQ16(gain, GAIN[clamp7(partVolume)]);
-        gain = multiplyQ16(gain, GAIN[clamp7(globalVolume)]);
+    public static int combinedGain(
+            int resourceLevel, int startLevel, int logicalChannelLevel, int globalSampledLevel) {
+        int gain = GAIN[clamp7(resourceLevel)];
+        gain = multiplyQ16(gain, GAIN[clamp7(startLevel)]);
+        gain = multiplyQ16(gain, GAIN[clamp7(logicalChannelLevel)]);
+        gain = multiplyQ16(gain, GAIN[clamp7(globalSampledLevel)]);
         return gain;
     }
 
-    /**
-     * Official MFiAudio combines track and part pan as track+part-64.
-     * 0 is hard right, 64 is center and 127 is hard left in the SDK table.
-     */
-    public static int combinedPan(int trackPan, int partPan) {
-        return clamp(clamp7(trackPan) + clamp7(partPan) - 64, 0, 127);
+    /** Active sampled pan is resource-wide pan + logical-channel pan - 64. */
+    public static int combinedPan(int resourcePan, int logicalChannelPan) {
+        return clamp(clamp7(resourcePan) + clamp7(logicalChannelPan) - 64, 0, 127);
     }
 
     public static int rightPanCoefficient(int pan) {
@@ -77,20 +74,22 @@ public final class MfiAudioMixer {
         return RIGHT_PAN[128 - pan];
     }
 
-    public static int leftGainCoefficient(int trackVolume, int noteLevel,
-            int partVolume, int globalVolume, int trackPan, int partPan) {
-        int total = gainCoefficient(trackVolume, noteLevel, partVolume, globalVolume);
-        return multiplyQ16(total, leftPanCoefficient(combinedPan(trackPan, partPan)));
+    public static int leftVoiceGain(
+            int resourceLevel, int startLevel, int logicalChannelLevel, int globalSampledLevel,
+            int resourcePan, int logicalChannelPan) {
+        int total = combinedGain(resourceLevel, startLevel, logicalChannelLevel, globalSampledLevel);
+        return multiplyQ16(total, leftPanCoefficient(combinedPan(resourcePan, logicalChannelPan)));
     }
 
-    public static int rightGainCoefficient(int trackVolume, int noteLevel,
-            int partVolume, int globalVolume, int trackPan, int partPan) {
-        int total = gainCoefficient(trackVolume, noteLevel, partVolume, globalVolume);
-        return multiplyQ16(total, rightPanCoefficient(combinedPan(trackPan, partPan)));
+    public static int rightVoiceGain(
+            int resourceLevel, int startLevel, int logicalChannelLevel, int globalSampledLevel,
+            int resourcePan, int logicalChannelPan) {
+        int total = combinedGain(resourceLevel, startLevel, logicalChannelLevel, globalSampledLevel);
+        return multiplyQ16(total, rightPanCoefficient(combinedPan(resourcePan, logicalChannelPan)));
     }
 
-    /** Applies an already-combined official mixer gain to one PCM sample. */
-    public static int applySample(int sample, int gain) {
+    /** Applies the final sampled-voice channel gain using legacy signed-int64 >> 15 arithmetic. */
+    public static int applyVoiceGain(int sample, int gain) {
         return (int)(((long)sample * (long)gain) >> 15);
     }
 

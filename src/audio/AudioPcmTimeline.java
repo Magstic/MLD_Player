@@ -80,7 +80,7 @@ public final class AudioPcmTimeline {
     private void mixRepeated(
             int[] left, int[] right, long chunkStart, long chunkEnd,
             AudioPlaybackSource.Voice voice, long passMicros, int passes) {
-        long voiceLength = voice.pcm16.length;
+        long voiceLength = voice.resource.getFrameCount();
         long approximateShift = Math.max(1L, AudioPlaybackSource.microsToFrameFloor(passMicros, sampleRate));
         long firstPass = Math.max(0L, Math.floorDiv(chunkStart - voiceLength - voice.startFrame, approximateShift) + 1L);
         while (firstPass > 0L
@@ -120,7 +120,7 @@ public final class AudioPcmTimeline {
             long end = Math.max(1L, AudioPlaybackSource.microsToFrameCeil(nominalMicros, sampleRate));
             for (AudioPlaybackSource.Voice voice : voices) {
                 long lastStart = instanceStartFrame(voice, Math.max(0, totalPasses - 1), wholePassMicros);
-                end = Math.max(end, AudioPlaybackSource.safeAdd(lastStart, voice.pcm16.length));
+                end = Math.max(end, AudioPlaybackSource.safeAdd(lastStart, voice.resource.getFrameCount()));
             }
             return end;
         }
@@ -129,10 +129,10 @@ public final class AudioPcmTimeline {
         long end = Math.max(1L, AudioPlaybackSource.microsToFrameCeil(nominalMicros, sampleRate));
         for (AudioPlaybackSource.Voice voice : voices) {
             if (voice.startMicros < loopStartMicros) {
-                end = Math.max(end, AudioPlaybackSource.safeAdd(voice.startFrame, voice.pcm16.length));
+                end = Math.max(end, AudioPlaybackSource.safeAdd(voice.startFrame, voice.resource.getFrameCount()));
             } else if (voice.startMicros < loopEndMicros) {
                 long lastStart = instanceStartFrame(voice, Math.max(0, totalPasses - 1), loopBodyMicros);
-                end = Math.max(end, AudioPlaybackSource.safeAdd(lastStart, voice.pcm16.length));
+                end = Math.max(end, AudioPlaybackSource.safeAdd(lastStart, voice.resource.getFrameCount()));
             }
         }
         return end;

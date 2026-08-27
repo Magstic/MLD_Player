@@ -57,6 +57,7 @@ public final class AudioProgram {
         RESOURCE_STOP,
         CHANNEL_LEVEL,
         CHANNEL_PAN,
+        CHANNEL_ROUTE,
         CONFIG_SELECT,
         SLOT_LOAD,
         SLOT_START,
@@ -194,6 +195,7 @@ public final class AudioProgram {
         public byte[] copyEncodedPayload() {
             return Arrays.copyOf(encodedPayload, encodedPayload.length);
         }
+
     }
 
     /** Final native audio channel state after the linear semantic pass. */
@@ -205,6 +207,8 @@ public final class AudioProgram {
         public final boolean panKnown;
         public final int pan;
         public final boolean panPhaseGated;
+        public final boolean routeKnown;
+        public final int route;
 
         ChannelState(
                 int logicalChannel,
@@ -213,7 +217,9 @@ public final class AudioProgram {
                 boolean levelPhaseGated,
                 boolean panKnown,
                 int pan,
-                boolean panPhaseGated) {
+                boolean panPhaseGated,
+                boolean routeKnown,
+                int route) {
             this.logicalChannel = logicalChannel;
             this.levelKnown = levelKnown;
             this.level = level;
@@ -221,6 +227,8 @@ public final class AudioProgram {
             this.panKnown = panKnown;
             this.pan = pan;
             this.panPhaseGated = panPhaseGated;
+            this.routeKnown = routeKnown;
+            this.route = route;
         }
     }
 
@@ -338,6 +346,44 @@ public final class AudioProgram {
         return false;
     }
 
+    /** Immutable typed sampled resource promoted from a top-level active adat entry. */
+    public static final class SampledResource {
+        public final AudioType audioType;
+        public final int selectorId;
+        public final int selectorFlags;
+        public final int sampleRate;
+        public final int codedBits;
+        public final int channelCount;
+        private final byte[] encodedPayload;
+
+        public SampledResource(
+                AudioType audioType,
+                int selectorId,
+                int selectorFlags,
+                int sampleRate,
+                int codedBits,
+                int channelCount,
+                byte[] encodedPayload) {
+            this.audioType = audioType;
+            this.selectorId = selectorId;
+            this.selectorFlags = selectorFlags;
+            this.sampleRate = sampleRate;
+            this.codedBits = codedBits;
+            this.channelCount = channelCount;
+            this.encodedPayload = encodedPayload == null
+                    ? new byte[0]
+                    : Arrays.copyOf(encodedPayload, encodedPayload.length);
+        }
+
+        public byte[] copyEncodedPayload() {
+            return Arrays.copyOf(encodedPayload, encodedPayload.length);
+        }
+
+        public int encodedPayloadLength() {
+            return encodedPayload.length;
+        }
+    }
+
     public static final class ResourceCatalogEntry {
         public final int catalogIndex;
         public final int offset;
@@ -354,6 +400,7 @@ public final class AudioProgram {
         public final int adpmByte2Low3;
         public final int adpmByte2Bit3;
         public final String chunkId;
+        public final SampledResource sampledResource;
 
         public ResourceCatalogEntry(
                 int catalogIndex,
@@ -370,7 +417,8 @@ public final class AudioProgram {
                 int adpmByte0,
                 int adpmByte1,
                 int adpmByte2Low3,
-                int adpmByte2Bit3) {
+                int adpmByte2Bit3,
+                SampledResource sampledResource) {
             this.catalogIndex = catalogIndex;
             this.chunkId = chunkId;
             this.offset = offset;
@@ -386,6 +434,7 @@ public final class AudioProgram {
             this.adpmByte1 = adpmByte1;
             this.adpmByte2Low3 = adpmByte2Low3;
             this.adpmByte2Bit3 = adpmByte2Bit3;
+            this.sampledResource = sampledResource;
         }
     }
 

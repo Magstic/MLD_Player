@@ -90,15 +90,24 @@ public final class AudioSemanticAudit {
                 audio, -1, AudioProgram.ActionKind.RESOURCE_START);
         eq("resource active index", 0, resourceStart.resourceIndex);
         eq("resource linked catalog", 0, resourceStart.linkedCatalogIndex);
-        same("resource renderer unsupported",
-                AudioProgram.RendererSupport.RECOGNIZED_UNSUPPORTED,
+        same("resource renderer verified",
+                AudioProgram.RendererSupport.VERIFIED_8001_4BIT,
                 resourceStart.rendererSupport);
+        eq("resource start level", 126, resourceStart.value);
+        eq("resource sample rate", 8000, resourceStart.sampleRate);
+        eq("resource coded bits", 4, resourceStart.codedBits);
+        eq("resource channels", 1, resourceStart.channelCount);
+        AudioProgram.SampledResource sampledResource = activeAdat(audio, 0).sampledResource;
+        isTrue("resource sampled payload typed", sampledResource != null);
+        eq("resource sampled payload length", 2, sampledResource.encodedPayloadLength());
+        eqBytes("resource sampled payload", new byte[] {0x12, 0x34},
+                sampledResource.copyEncodedPayload());
 
         AudioProgram.ConfigBinding config = config(audio, "audio", 0);
-        eq("live config selector", 31, config.selector);
-        isTrue("selector31 conditional clear retained", config.clearWhenOutOfRange);
-        containsDiagnostic(audio, "AUDIO_CONFIG_TABLE_UNRESOLVED");
-        containsDiagnostic(audio, "AUDIO_RENDERER_RESOURCE_ADAT_UNSUPPORTED");
+        eq("initial config selector remains", 1, config.selector);
+        AudioProgram.ChannelState routed = channel(audio, 0);
+        isTrue("audio route known", routed.routeKnown);
+        eq("selector31 clears route", 0, routed.route);
 
         int[] routeFlags = audio.routeState.copyFlags();
         int[] routeClasses = audio.routeState.copyClasses();
@@ -254,7 +263,11 @@ public final class AudioSemanticAudit {
         List<TopLevelChunk> chunks = new ArrayList<TopLevelChunk>();
         chunks.add(chunk("ainf", 13, 2, "header", new byte[] {0x01}));
         chunks.add(chunk("thrd", 20, 2, "header", new byte[] {0x02, 0x00, 0x21}));
-        chunks.add(chunk("adat", 42, 4, "resource", new byte[] {0x00, 0x02, (byte) 0x81, 0x00}));
+        chunks.add(chunk("adat", 42, 4, "resource", new byte[] {
+                0x00, 0x0B, (byte)0x81, 0x03,
+                'a', 'd', 'p', 'm', 0x00, 0x03, 0x08, 0x04, 0x01,
+                0x12, 0x34
+        }));
         return new MldDocument(
                 new byte[0],
                 "melo",
