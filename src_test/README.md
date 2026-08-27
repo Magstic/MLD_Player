@@ -1,10 +1,25 @@
-This directory stores archived Java code that is intentionally excluded from the
-main `MLD Player` build.
+# Test source tree
 
-Current archived area:
-- Sound effect host playback experiments
-- ADPCM decoding and PCM output helpers
-- Melody regression audit helpers such as `main.ExportAudit`
+`src_test` is exclusively the project's Java test source root.
 
-The Ant build compiles only `src`, so files kept under `src_test` remain
-available for later research without affecting the melody-focused player.
+It contains deterministic regression, integration, and architecture tests plus test-only fixtures/support code.
+
+The complete `src_test` tree is compiled and executed automatically by the normal Ant build, if any audit fails, packaging fails.
+
+Current required tests:
+
+- `mld.format.FormatDecodeFoundationAudit`
+- `architecture.ArchitectureClosureAudit`
+- `main.ApplicationCompositionAudit`
+- `export.ExportSystemAudit`
+- `midi.MidiSerializationAudit`
+- `playback.PlaybackInfrastructureAudit`
+- `playback.PlaybackTransportAudit`
+- `mld.semantic.TimingSemanticsAudit`
+- `mld.semantic.OrdinaryNoteSemanticsAudit`
+- `mld.semantic.SystemEventSemanticsAudit`
+- `mld.semantic.ResourceSemanticsAudit`
+- `mld.semantic.ResourceLongFormSemanticsAudit`
+- `mld.semantic.AudioSemanticAudit`
+- `audio.AudioRendererAudit`
+- `normalize.MachineDependentSemanticsAudit`

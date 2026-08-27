@@ -5,83 +5,20 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
-import event.MachineDependentEvent;
-import event.TrackDecodeResult;
-import event.TrackEvent;
+import mld.decode.MachineDependentEvent;
+import mld.decode.MachineDescriptorMatcher;
+import mld.decode.DecodedTrack;
+import mld.decode.TrackEvent;
 
 public final class MdNormalizer {
-    private static final DescriptorRule[] DESCRIPTORS = new DescriptorRule[] {
-            rule(0, 0x104, bytes(0x61, 0x81), bytes()),
-            rule(1, 0x105, bytes(0x61, 0x82), bytes()),
-            rule(2, 0x109, bytes(0x61, 0x83), bytes()),
-            rule(3, 0x106, bytes(0x61, 0x84), bytes()),
-            rule(4, 0x000, bytes(0x21, 0x81), bytes()),
-            rule(5, 0x001, bytes(0x21, 0x82), bytes()),
-            rule(6, 0x002, bytes(0x21, 0x83), bytes()),
-            rule(7, 0x003, bytes(0x21, 0x86), bytes()),
-            rule(8, 0x400, bytes(0x11), bytes(0x01, 0xF0, 0x07)),
-            rule(9, 0x401, bytes(0x11), bytes(0x01, 0xF1)),
-            rule(10, 0x001, bytes(0x41, 0x80), bytes()),
-            rule(11, 0x000, bytes(0x41, 0x81), bytes()),
-            rule(12, 0x104, bytes(0x41, 0x81), bytes()),
-            rule(13, 0x105, bytes(0x41, 0x82), bytes()),
-            rule(14, 0x002, bytes(0x41, 0x83), bytes()),
-            rule(15, 0x106, bytes(0x41, 0x84), bytes()),
-            rule(16, 0x003, bytes(0x41, 0x86), bytes()),
-            rule(17, 0x103, bytes(0x41, 0x8F), bytes()),
-            rule(18, 0x000, bytes(0x71, 0x81), bytes()),
-            rule(19, 0x104, bytes(0x71, 0x81), bytes()),
-            rule(20, 0x001, bytes(0x21, 0x82), bytes()),
-            rule(21, 0x105, bytes(0x71, 0x82), bytes()),
-            rule(22, 0x002, bytes(0x71, 0x83), bytes()),
-            rule(23, 0x106, bytes(0x71, 0x84), bytes()),
-            rule(24, 0x003, bytes(0x71, 0x86), bytes()),
-            rule(25, 0x103, bytes(0x71, 0x8F), bytes()),
-            rule(26, 0x402, bytes(0x31, 0x10), bytes()),
-            rule(27, 0x104, bytes(0x31, 0x81), bytes()),
-            rule(28, 0x105, bytes(0x31, 0x82), bytes()),
-            rule(29, 0x106, bytes(0x31, 0x84), bytes()),
-            rule(30, 0x103, bytes(0x31, 0x8F), bytes()),
-            rule(31, 0x100, bytes(0x61, 0x10), bytes()),
-            rule(32, 0x101, bytes(0x61, 0x11), bytes()),
-            rule(33, 0x102, bytes(0x61, 0x12), bytes()),
-            rule(34, 0x004, bytes(0x21, 0x90), bytes()),
-            rule(35, 0x005, bytes(0x21, 0x91), bytes()),
-            rule(36, 0x006, bytes(0x21, 0x92), bytes()),
-            rule(37, 0x007, bytes(0x21, 0x93), bytes()),
-            rule(38, 0x403, bytes(0x11), bytes(0x01, 0xF0, 0x05)),
-            rule(39, 0x404, bytes(0x11), bytes(0x01, 0xF0, 0x06)),
-            rule(40, 0x100, bytes(0x41, 0x10), bytes()),
-            rule(41, 0x101, bytes(0x41, 0x11), bytes()),
-            rule(42, 0x102, bytes(0x41, 0x12), bytes()),
-            rule(43, 0x004, bytes(0x41, 0x90), bytes()),
-            rule(44, 0x005, bytes(0x41, 0x91), bytes()),
-            rule(45, 0x006, bytes(0x41, 0x92), bytes()),
-            rule(46, 0x007, bytes(0x41, 0x93), bytes()),
-            rule(47, 0x100, bytes(0x71, 0x10), bytes()),
-            rule(48, 0x101, bytes(0x71, 0x11), bytes()),
-            rule(49, 0x102, bytes(0x71, 0x12), bytes()),
-            rule(50, 0x004, bytes(0x71, 0x90), bytes()),
-            rule(51, 0x005, bytes(0x71, 0x91), bytes()),
-            rule(52, 0x006, bytes(0x71, 0x92), bytes()),
-            rule(53, 0x007, bytes(0x71, 0x93), bytes()),
-            rule(54, 0x100, bytes(0x31, 0x30), bytes()),
-            rule(55, 0x101, bytes(0x31, 0x31), bytes()),
-            rule(56, 0x102, bytes(0x31, 0x32), bytes()),
-            rule(57, 0x100, bytes(0x01, 0x10), bytes()),
-            rule(58, 0x101, bytes(0x01, 0x11), bytes()),
-            rule(59, 0x102, bytes(0x01, 0x12), bytes()),
-            rule(60, 0x405, bytes(0x11), bytes(0x01, 0xF0, 0x03)),
-            rule(61, 0x406, bytes(0x11), bytes(0x01, 0xF0, 0x04)),
-            rule(62, 0x407, bytes(0x11), bytes(0x01, 0xF2, 0x07))
-    };
+    private static final MachineDescriptorMatcher DESCRIPTOR_MATCHER = new MachineDescriptorMatcher();
 
-    public MdNormalizationResult normalize(List<TrackDecodeResult> tracks) {
+    public MdNormalizationResult normalize(List<DecodedTrack> tracks) {
         List<MdNormalizedEvent> normalized = new ArrayList<MdNormalizedEvent>();
         List<MdNormalizedEvent> unknown = new ArrayList<MdNormalizedEvent>();
         List<String> warnings = new ArrayList<String>();
 
-        for (TrackDecodeResult track : tracks) {
+        for (DecodedTrack track : tracks) {
             for (TrackEvent event : track.events) {
                 if (!(event instanceof MachineDependentEvent)) {
                     continue;
@@ -101,26 +38,26 @@ public final class MdNormalizer {
     }
 
     private MdNormalizedEvent normalizeEvent(MachineDependentEvent event) {
-        byte[] payload = event.payload;
+        byte[] payload = event.copyPayload();
         String rawHex = toHex(payload);
         int prefix = payload.length >= 1 ? payload[0] & 0xFF : -1;
         int selector = payload.length >= 2 ? payload[1] & 0xFF : -1;
         Map<String, Object> details = new LinkedHashMap<String, Object>();
         details.put("payloadLength", Integer.valueOf(payload.length));
 
-        DescriptorMatch match = firstMatch(payload);
+        MachineDescriptorMatcher.Match match = DESCRIPTOR_MATCHER.match(payload);
         if (match == null) {
             return unknown(event, prefix, selector, rawHex, details);
         }
 
-        details.put("descriptorIndex", Integer.valueOf(match.rule.index));
-        details.put("handlerId", Integer.valueOf(match.rule.handlerId));
+        details.put("descriptorIndex", Integer.valueOf(match.descriptorIndex));
+        details.put("handlerId", Integer.valueOf(match.handlerId));
         details.put("matchedPrefixLength", Integer.valueOf(match.bodyOffset));
         details.put("bodyOffset", Integer.valueOf(match.bodyOffset));
         details.put("bodyLength", Integer.valueOf(payload.length - match.bodyOffset));
         details.put("matchedPrefix", toHex(payload, 0, match.bodyOffset));
 
-        String family = populateHandlerDetails(match.rule.handlerId, payload, match.bodyOffset, details);
+        String family = populateHandlerDetails(match.handlerId, payload, match.bodyOffset, details);
         return known(event, prefix, selector, family, "high", rawHex, details);
     }
 
@@ -529,26 +466,6 @@ public final class MdNormalizer {
         details.put("layeredFtSynthEffect", ft);
     }
 
-    private static DescriptorMatch firstMatch(byte[] payload) {
-        for (DescriptorRule rule : DESCRIPTORS) {
-            int offset = 0;
-            if (!matches(payload, offset, rule.pattern1)) continue;
-            offset += rule.pattern1.length;
-            if (!matches(payload, offset, rule.pattern2)) continue;
-            offset += rule.pattern2.length;
-            return new DescriptorMatch(rule, offset);
-        }
-        return null;
-    }
-
-    private static boolean matches(byte[] payload, int offset, byte[] pattern) {
-        if (offset < 0 || offset + pattern.length > payload.length) return false;
-        for (int i = 0; i < pattern.length; i++) {
-            if (payload[offset + i] != pattern[i]) return false;
-        }
-        return true;
-    }
-
     private static boolean has(byte[] payload, int offset, int count) {
         return offset >= 0 && count >= 0 && offset + count <= payload.length;
     }
@@ -605,7 +522,7 @@ public final class MdNormalizer {
                 confidence,
                 true,
                 rawHex,
-                event.payload,
+                event.copyPayload(),
                 details);
     }
 
@@ -625,7 +542,7 @@ public final class MdNormalizer {
                 "low",
                 false,
                 rawHex,
-                event.payload,
+                event.copyPayload(),
                 details);
     }
 
@@ -639,40 +556,6 @@ public final class MdNormalizer {
             builder.append(String.format("%02x", data[offset + i] & 0xFF));
         }
         return builder.toString();
-    }
-
-    private static byte[] bytes(int... values) {
-        byte[] result = new byte[values.length];
-        for (int i = 0; i < values.length; i++) result[i] = (byte) values[i];
-        return result;
-    }
-
-    private static DescriptorRule rule(int index, int handlerId, byte[] pattern1, byte[] pattern2) {
-        return new DescriptorRule(index, handlerId, pattern1, pattern2);
-    }
-
-    private static final class DescriptorRule {
-        final int index;
-        final int handlerId;
-        final byte[] pattern1;
-        final byte[] pattern2;
-
-        DescriptorRule(int index, int handlerId, byte[] pattern1, byte[] pattern2) {
-            this.index = index;
-            this.handlerId = handlerId;
-            this.pattern1 = pattern1;
-            this.pattern2 = pattern2;
-        }
-    }
-
-    private static final class DescriptorMatch {
-        final DescriptorRule rule;
-        final int bodyOffset;
-
-        DescriptorMatch(DescriptorRule rule, int bodyOffset) {
-            this.rule = rule;
-            this.bodyOffset = bodyOffset;
-        }
     }
 
     private static final class FormatCodeSummary {

@@ -4,3 +4,4 @@ out/
 lib/
 *.class
 .vscode
+docs/dev

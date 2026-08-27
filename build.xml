@@ -1,15 +1,22 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <project name="mld-player" default="jar" basedir=".">
-    <description>Ant build for the clean-room Java MLD player.</description>
+    <description>Ant build for the MLD player.</description>
 
     <property name="src.dir" value="src"/>
+    <property name="test.src.dir" value="src_test"/>
     <property name="build.dir" value="build"/>
     <property name="classes.dir" value="${build.dir}/classes"/>
+    <property name="test.classes.dir" value="${build.dir}/test-classes"/>
     <property name="dist.dir" value="dist"/>
     <property name="jar.name" value="mld-player.jar"/>
     <property name="jar.main.class" value="main.PlayerLauncher"/>
     <property name="javac.source" value="1.8"/>
     <property name="javac.target" value="1.8"/>
+
+    <path id="test.classpath">
+        <pathelement location="${classes.dir}"/>
+        <pathelement location="${test.classes.dir}"/>
+    </path>
 
     <target name="clean" description="Delete generated build output.">
         <delete dir="${build.dir}"/>
@@ -34,7 +41,41 @@
             debug="true"/>
     </target>
 
-    <target name="jar" depends="compile" description="Build the runnable jar.">
+    <target name="-test-compile" depends="compile">
+        <delete dir="${test.classes.dir}"/>
+        <mkdir dir="${test.classes.dir}"/>
+        <javac
+            srcdir="${test.src.dir}"
+            destdir="${test.classes.dir}"
+            encoding="UTF-8"
+            source="${javac.source}"
+            target="${javac.target}"
+            includeantruntime="false"
+            debug="true">
+            <classpath refid="test.classpath"/>
+        </javac>
+    </target>
+
+    <target name="-test" depends="-test-compile">
+        <java classname="mld.format.FormatDecodeFoundationAudit" classpathref="test.classpath" fork="true" failonerror="true"/>
+        <java classname="architecture.ArchitectureClosureAudit" classpathref="test.classpath" fork="true" failonerror="true"/>
+        <java classname="main.ApplicationCompositionAudit" classpathref="test.classpath" fork="true" failonerror="true"/>
+        <java classname="export.ExportSystemAudit" classpathref="test.classpath" fork="true" failonerror="true"/>
+        <java classname="midi.MidiSerializationAudit" classpathref="test.classpath" fork="true" failonerror="true"/>
+        <java classname="playback.PlaybackInfrastructureAudit" classpathref="test.classpath" fork="true" failonerror="true"/>
+        <java classname="playback.PlaybackTransportAudit" classpathref="test.classpath" fork="true" failonerror="true"/>
+        <java classname="mld.semantic.TimingSemanticsAudit" classpathref="test.classpath" fork="true" failonerror="true"/>
+        <java classname="mld.semantic.OrdinaryNoteSemanticsAudit" classpathref="test.classpath" fork="true" failonerror="true"/>
+        <java classname="mld.semantic.SystemEventSemanticsAudit" classpathref="test.classpath" fork="true" failonerror="true"/>
+        <java classname="mld.semantic.ResourceSemanticsAudit" classpathref="test.classpath" fork="true" failonerror="true"/>
+        <java classname="mld.semantic.ResourceLongFormSemanticsAudit" classpathref="test.classpath" fork="true" failonerror="true"/>
+        <java classname="mld.semantic.AudioSemanticAudit" classpathref="test.classpath" fork="true" failonerror="true"/>
+        <java classname="audio.AudioRendererAudit" classpathref="test.classpath" fork="true" failonerror="true"/>
+        <java classname="normalize.MachineDependentSemanticsAudit" classpathref="test.classpath" fork="true" failonerror="true"/>
+    </target>
+
+
+    <target name="jar" depends="-test" description="Run the full test gate and build the runnable jar.">
         <jar destfile="${dist.dir}/${jar.name}" basedir="${classes.dir}">
             <manifest>
                 <attribute name="Main-Class" value="${jar.main.class}"/>

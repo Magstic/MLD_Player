@@ -5,17 +5,16 @@ import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.List;
 
-import bridge.mld.GeneratedMldSong;
-import bridge.mld.ImportedMidiSong;
-import bridge.mld.MidiSequenceImporter;
-import bridge.mld.MidiToMldConverter;
-import bridge.mld.MldContainerWriter;
-import bridge.midi.MidiBridgeExporter;
-import container.MldFile;
-import playback.JavaMidiPlayer;
-import playback.PlaybackSequenceBuilder;
-import timeline.MldTimelineLoader;
-import timeline.PlaybackTimeline;
+import export.ExportMode;
+import export.ExportService;
+import mld.format.MldDocument;
+import mld.semantic.Diagnostic;
+import mld.semantic.NativeProgram;
+import midi.MidiPlan;
+import normalize.MdNormalizationResult;
+import normalize.MdNormalizer;
+import playback.PlaybackContent;
+import playback.PlaybackSession;
 
 public final class Cli {
     private static final String BOX_BORDER = "************************************************************";
@@ -39,80 +38,52 @@ public final class Cli {
     private void run(Arguments arguments) throws Exception {
         Path inputPath = arguments.inputPath.toAbsolutePath().normalize();
         Path outputDir = arguments.outputDir != null ? arguments.outputDir.toAbsolutePath().normalize() : null;
-        Path toMldPath = arguments.toMldPath != null ? arguments.toMldPath.toAbsolutePath().normalize() : null;
-
-        if (toMldPath != null) {
-            convertMidiToMld(inputPath, toMldPath);
-            return;
-        }
-
-        PlaybackTimeline timeline = MldTimelineLoader.load(inputPath);
+        MldApplicationWorkflow workflow = new MldApplicationWorkflow();
+        ApplicationTrack track = workflow.load(inputPath);
 
         if (outputDir != null) {
-            MidiBridgeExporter exporter = new MidiBridgeExporter();
-            exporter.export(timeline, inputPath, outputDir);
+            new ExportService().exportPrepared(
+                    track.program,
+                    track.midi,
+                    inputPath,
+                    outputDir,
+                    ExportMode.AUTO);
         }
 
-        List<String> combinedWarnings = collectWarnings(timeline);
-        System.out.print(renderSummary(timeline.file, timeline));
+        MdNormalizationResult md = new MdNormalizer().normalize(track.decodedTracks);
+        List<String> combinedWarnings = collectWarnings(track.program, track.midi, md);
+        System.out.print(renderSummary(track.document, track.midi, md));
 
-        playTimeline(timeline, resolvePlaybackLoopCount(timeline, arguments));
+        play(workflow, track, resolvePlaybackLoopCount(track.midi, arguments));
 
         if (!combinedWarnings.isEmpty()) {
             System.out.print(renderWarnings(combinedWarnings));
         }
     }
 
-    private void convertMidiToMld(Path inputPath, Path outputPath) throws Exception {
-        MidiSequenceImporter importer = new MidiSequenceImporter();
-        ImportedMidiSong imported = importer.importSequence(inputPath);
-        GeneratedMldSong generated = new MidiToMldConverter().convert(imported);
-        new MldContainerWriter().writeToPath(generated, outputPath);
-
-        PlaybackTimeline validatedTimeline = MldTimelineLoader.load(outputPath);
-        List<String> warnings = new ArrayList<String>();
-        warnings.addAll(imported.warnings);
-        warnings.addAll(generated.warnings);
-        warnings.addAll(collectWarnings(validatedTimeline));
-
-        System.out.println("MIDI -> MLD");
-        System.out.println(SECTION_DIVIDER);
-        System.out.println("Input: " + inputPath);
-        System.out.println("Output: " + outputPath);
-        System.out.println("Title: " + generated.title);
-        System.out.println("Copyright: " + generated.copyright);
-        System.out.println("Input PPQ: " + imported.inputPpq);
-        System.out.println("Selected timebase: " + generated.timebase);
-        System.out.println("Generated tracks: " + generated.trackCount);
-        System.out.println("Generated notes: " + generated.noteCount);
-        System.out.println("Generated controls: " + generated.controlCount);
-        System.out.println("Generated tempos: " + generated.tempoCount);
-        System.out.println("Validated compiled notes: " + validatedTimeline.notes.size());
-        System.out.println("Validated tempo points: " + validatedTimeline.tempoPoints.size());
-        System.out.println("Validated mapped controls: " + validatedTimeline.mappedControls.size());
-        System.out.println(BOX_BORDER);
-
-        if (!warnings.isEmpty()) {
-            System.out.print(renderWarnings(warnings));
+    static void play(MldApplicationWorkflow workflow, ApplicationTrack track, int loopCount) throws Exception {
+        if (workflow == null || track == null) {
+            throw new IllegalArgumentException("Playback workflow and track are required.");
         }
-    }
-
-    static void playTimeline(PlaybackTimeline timeline, int loopCount) throws Exception {
-        if (timeline.notes.isEmpty()) {
-            System.out.println("Playback mode: unavailable (no ordinary notes)");
+        if (!track.isPlayable()) {
+            System.out.println("Playback mode: unavailable (no renderable melody or sampled audio)");
             System.out.println("Loop: n/a");
-            System.out.println("MIDI backend: n/a");
-            System.out.println("MIDI output: n/a");
+            System.out.println("Backend: n/a");
+            System.out.println("Output: n/a");
             System.out.println(BOX_BORDER);
             return;
         }
 
-        PlaybackSequenceBuilder sequenceBuilder = new PlaybackSequenceBuilder();
-        JavaMidiPlayer player = new JavaMidiPlayer();
-        player.play(sequenceBuilder.build(timeline, loopCount), loopCount);
+        PlaybackContent content = workflow.preparePlayback(track, loopCount);
+        new PlaybackSession().play(
+                content,
+                loopCount,
+                new ConsolePlaybackMonitor(),
+                null,
+                null);
     }
 
-    static String renderSummary(MldFile file, PlaybackTimeline timeline) {
+    static String renderSummary(MldDocument file, MidiPlan midi, MdNormalizationResult md) {
         MetadataSummary metadata = MetadataSummary.from(file);
         StringBuilder builder = new StringBuilder();
 
@@ -121,19 +92,19 @@ public final class Cli {
         builder.append("Copyright: ").append(metadata.copyright).append(System.lineSeparator());
         builder.append(SECTION_DIVIDER).append(System.lineSeparator());
         builder.append("Tracks: ").append(file.tracks.size()).append(System.lineSeparator());
-        builder.append("Tempo points: ").append(timeline.tempoPoints.size()).append(System.lineSeparator());
-        builder.append("Compiled notes: ").append(timeline.notes.size()).append(System.lineSeparator());
-        builder.append("Mapped controls: ").append(timeline.mappedControls.size()).append(System.lineSeparator());
-        builder.append("Unknown events: ").append(timeline.mdNormalization.unknownEvents.size()).append(System.lineSeparator());
-        if (timeline.loopInfo.hasLoop) {
+        builder.append("Tempo points: ").append(midi.tempoPoints.size()).append(System.lineSeparator());
+        builder.append("Compiled notes: ").append(midi.notes.size()).append(System.lineSeparator());
+        builder.append("Mapped controls: ").append(midi.mappedControls.size()).append(System.lineSeparator());
+        builder.append("Unknown events: ").append(md.unknownEvents.size()).append(System.lineSeparator());
+        if (midi.loopInfo.hasLoop) {
             builder.append("Loop: yes (slot=")
-                    .append(timeline.loopInfo.loopSlot)
+                    .append(midi.loopInfo.loopSlot)
                     .append(", raw=")
-                    .append(timeline.loopInfo.loopStartRawTick)
+                    .append(midi.loopInfo.loopStartRawTick)
                     .append(" -> ")
-                    .append(timeline.loopInfo.loopEndRawTick)
+                    .append(midi.loopInfo.loopEndRawTick)
                     .append(", repeat=")
-                    .append(formatLoopCount(timeline.loopInfo.repeatCount))
+                    .append(formatLoopCount(midi.loopInfo.repeatCount))
                     .append(")")
                     .append(System.lineSeparator());
         } else {
@@ -143,10 +114,17 @@ public final class Cli {
         return builder.toString();
     }
 
-    static List<String> collectWarnings(PlaybackTimeline timeline) {
+    static List<String> collectWarnings(NativeProgram program, MidiPlan midi, MdNormalizationResult md) {
         List<String> combinedWarnings = new ArrayList<String>();
-        combinedWarnings.addAll(timeline.warnings);
-        combinedWarnings.addAll(timeline.mdNormalization.warnings);
+        combinedWarnings.addAll(program.warnings);
+        combinedWarnings.addAll(midi.warnings);
+        combinedWarnings.addAll(md.warnings);
+        for (Diagnostic diagnostic : program.diagnostics) {
+            if (diagnostic.severity == Diagnostic.Severity.INFO) {
+                continue;
+            }
+            combinedWarnings.add("[" + diagnostic.code + "] " + diagnostic.message);
+        }
         return combinedWarnings;
     }
 
@@ -159,8 +137,8 @@ public final class Cli {
         return builder.toString();
     }
 
-    private static int resolvePlaybackLoopCount(PlaybackTimeline timeline, Arguments arguments) {
-        boolean hasLoop = timeline != null && timeline.loopInfo != null && timeline.loopInfo.hasLoop;
+    private static int resolvePlaybackLoopCount(MidiPlan midi, Arguments arguments) {
+        boolean hasLoop = midi != null && midi.loopInfo != null && midi.loopInfo.hasLoop;
         if (!hasLoop) {
             return 0;
         }
@@ -177,7 +155,6 @@ public final class Cli {
     private static void printUsage() {
         System.out.println("Usage:");
         System.out.println("  java -jar mld-player.jar <file.mld> [--output <dir>] [--loop [<n|infinite>]]");
-        System.out.println("  java -jar mld-player.jar <file.mid> --to-mld <file.mld>");
         System.out.println("Launcher:");
         System.out.println("  java -jar mld-player.jar            open the Swing player");
         System.out.println("  java -jar mld-player.jar --gui      force the Swing player");
@@ -185,8 +162,7 @@ public final class Cli {
         System.out.println("  passing a file path starts CLI playback directly");
         System.out.println("  looped files repeat infinitely by default");
         System.out.println("Options:");
-        System.out.println("  --output <path>        optional output directory for MIDI / bridge.json");
-        System.out.println("  --to-mld <path>        convert a PPQ MIDI file into an MLD file");
+        System.out.println("  --output <path>        optional parent directory for AUTO export into MFiExport");
         System.out.println("  --loop [<value>]       override playback loop count; use without a value for infinite");
         System.out.println("  --help                 show this message");
     }
@@ -200,34 +176,24 @@ public final class Cli {
             this.copyright = copyright;
         }
 
-        static MetadataSummary from(MldFile file) {
-            String title = cleanInfoText(file.lastInfoText("titl"));
-            String copy = cleanInfoText(file.lastInfoText("copy"));
+        static MetadataSummary from(MldDocument file) {
+            String title = MldApplicationWorkflow.cleanInfoText(file.lastInfoText("titl"));
+            String copy = MldApplicationWorkflow.cleanInfoText(file.lastInfoText("copy"));
             return new MetadataSummary(title, copy);
         }
 
-        private static String cleanInfoText(String value) {
-            if (value == null) {
-                return "";
-            }
-            int nul = value.indexOf('\0');
-            String cleaned = nul >= 0 ? value.substring(0, nul) : value;
-            return cleaned.trim();
-        }
     }
 
     private static final class Arguments {
         final Path inputPath;
         final Path outputDir;
-        final Path toMldPath;
         final int loopCount;
         final boolean loopSpecified;
         final boolean showHelp;
 
-        Arguments(Path inputPath, Path outputDir, Path toMldPath, int loopCount, boolean loopSpecified, boolean showHelp) {
+        Arguments(Path inputPath, Path outputDir, int loopCount, boolean loopSpecified, boolean showHelp) {
             this.inputPath = inputPath;
             this.outputDir = outputDir;
-            this.toMldPath = toMldPath;
             this.loopCount = loopCount;
             this.loopSpecified = loopSpecified;
             this.showHelp = showHelp;
@@ -236,7 +202,6 @@ public final class Cli {
         static Arguments parse(String[] args) {
             Path input = null;
             Path output = null;
-            Path toMld = null;
             int loopCount = 0;
             boolean loopSpecified = false;
             boolean showHelp = false;
@@ -249,10 +214,6 @@ public final class Cli {
                 }
                 if ("--output".equals(arg) && i + 1 < args.length) {
                     output = Paths.get(args[++i]);
-                    continue;
-                }
-                if ("--to-mld".equals(arg) && i + 1 < args.length) {
-                    toMld = Paths.get(args[++i]);
                     continue;
                 }
                 if ("--loop".equals(arg)) {
@@ -274,14 +235,7 @@ public final class Cli {
                 throw new IllegalArgumentException("Unknown or incomplete argument: " + arg);
             }
 
-            if (toMld != null && output != null) {
-                throw new IllegalArgumentException("--output cannot be used together with --to-mld.");
-            }
-            if (toMld != null && loopSpecified) {
-                throw new IllegalArgumentException("--loop cannot be used together with --to-mld.");
-            }
-
-            return new Arguments(input, output, toMld, loopCount, loopSpecified, showHelp);
+            return new Arguments(input, output, loopCount, loopSpecified, showHelp);
         }
 
         private static int parseLoopCount(String value) {

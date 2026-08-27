@@ -687,7 +687,7 @@ Operation model:
 
 Handler `0x109` uses every byte after the three-byte header as coded payload. `durationByteCount` equals the coded payload length.
 
-Handler `0x106` reads a BE32 `durationByteCount` after the three-byte header. Coded payload begins after the BE32 field and extends to the descriptor-body end.
+Handler `0x106` reads a BE32 `durationByteCount` after the three-byte header. Coded payload begins after the BE32 field. The verified legacy `71:84` renderer consumes exactly `durationByteCount` bytes; a declared count beyond the available body is not renderable.
 
 Native duration:
 
@@ -696,6 +696,8 @@ Native duration:
 - `durationMs = floor(sampleCount * 1000 / sampleRate + 0.5)`
 
 Layered families perform audio backend load/release/start calls. Monolithic families maintain the corresponding slot caches without these audio backend calls.
+
+Production PCM renderer scope is intentionally narrower than semantic recognition. The currently verified renderer profile is descriptor index `23` (`71 84`) with operation `1`, flags byte `0`, mono, a structurally valid counted payload, and 4-bit format `5`, `13`, or `21`. Other recognized `0x8001` forms remain typed evidence with explicit unsupported renderer status. See `mld_audio_reverse_evidence.md`.
 
 ### Compact `0x8002` Load State
 

@@ -14,25 +14,37 @@ MFi2MIDI conversion is inherently **lossy**. As a result, this project does not 
 
 However, the wide range of available SF2 SoundFonts can still provide many different ways to render and enjoy MFi music.
 
-This software supports MFi1 and MFi2 Melody.
+
+## MFi Support
+
+| MFi | Support |
+|---|---|
+| MFi 1 | `█████████▌` ~95% |
+| MFi 2 | `█████████░` ~90% |
+| MFi 3 | `███████▌░░` ~75% |
+| MFi 4 | `██████▌░░░` ~65% |
+| MFi 5 | `█████▌░░░░` ~55% |
+
 
 ## Play
 
 Java 8, and Double-click the JAR!
 
+
 ### CLI
 
 ```
 java -jar mld-player.jar <file.mld>
-java -jar mld-player.jar <file.mld> --output <dir>       export MIDI
+java -jar mld-player.jar <file.mld> --output <dir>       AUTO export to <dir>/MFiExport
 java -jar mld-player.jar <file.mld> --loop [n|infinite]  override loop count
 ```
+
 
 ### SoundFonts
 
 This software supports customizing SF2 using:
-- [VirtualMIDISynth](https://coolsoft.altervista.org/en/virtualmidisynth)
-- [FluidSynth](https://www.fluidsynth.org/)
+- [VirtualMIDISynth](https://coolsoft.altervista.org/en/virtualmidisynth)（Win）
+- [FluidSynth](https://www.fluidsynth.org/)（Linux / Mac）
 
 ---
 
@@ -44,32 +56,18 @@ This software supports customizing SF2 using:
 ant
 ```
 
----
 
 ## Tree
 
-```
-src/
-  container/   MldParser, MldFile       — melo container parsing
-  event/       TrackDecoder, TrackEvent — per-track event decoding
-  normalize/   MdNormalizer             — MD event normalization
-  timeline/    TimelineCompiler         — compilation, channel routing, tempo
-  playback/    JavaMidiPlayer           — real-time MIDI playback
-  bridge/midi/ MidiBridgeExporter       — MIDI segment export + bridge JSON
-  main/        Cli, SwingPlayer, PlayerLauncher — entry points
-  util/        helpers
-src_test/      archived experiments (SFX, ADPCM, audit)
-docs/          spec reference
-tools/         probe script
-```
+[docs/tree.md](docs/tree.md)
 
 ---
 
 ## Known Gaps
 
-- Loop uses transport-level restart, not the official parser-cursor rewind with carry-over state. Works for most BGM but differs structurally.
-- Some machine-dependent sub-families are parsed but not fully voiced.
-- MLD Player will never support sound effects, but it still maintains a branch for testing sound effects: `src_test`.
+- Sampled-audio rendering is currently limited to the verified `0x8001` 4-bit mono `71:84` profile.
+- `0x8000`, `0x8001` 2-bit, `0x8002`, `71:86`, and resource-triggered sampled audio remain unsupported.
+- Proprietary MFi synthesizer backend requests are preserved as semantic evidence but are not rendered by the host MIDI bridge.
 
 ---
 

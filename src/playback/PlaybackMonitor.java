@@ -20,6 +20,9 @@ public interface PlaybackMonitor {
 
     void onPlaybackProgress(Progress progress);
 
+    default void onPlaybackFinished(Progress progress, boolean completedNaturally) {
+    }
+
     boolean isStopRequested();
 
     default boolean isPauseRequested() {
