@@ -115,6 +115,10 @@ public final class AudioRenderer {
                         Integer.valueOf(action.logicalChannel), Integer.valueOf(action.value));
                 continue;
             }
+            if (isVerifiedResourceStop(action)) {
+                stopResourceVoices(voiceBuilders, program, action);
+                continue;
+            }
 
             DecodedSampledResource decoded;
             int startLevel;
@@ -173,6 +177,7 @@ public final class AudioRenderer {
                     decoded,
                     voiceFrameCount,
                     action.logicalChannel,
+                    resourceStart ? action.resourceIndex : -1,
                     startLevel,
                     globalSampledLevel,
                     leftGain,
@@ -226,6 +231,19 @@ public final class AudioRenderer {
         }
     }
 
+    private static void stopResourceVoices(
+            List<MutableVoice> voices, NativeProgram program, AudioProgram.AudioAction action) {
+        long stopFrame = AudioPlaybackSource.microsToFrameFloor(
+                program.timing.rawTickToMicros(action.rawTick),
+                AudioPlaybackSource.NATIVE_SAMPLE_RATE);
+        for (MutableVoice voice : voices) {
+            if (voice.resourceIndex == action.resourceIndex
+                    && voice.logicalChannel == action.logicalChannel) {
+                voice.stopAt(stopFrame);
+            }
+        }
+    }
+
     private static int durationLimitedFrameCount(DecodedSampledResource decoded, long durationMs) {
         if (durationMs < 0L) return decoded.getFrameCount();
         long durationFrames = AudioPlaybackSource.safeMultiply(
@@ -237,8 +255,9 @@ public final class AudioRenderer {
         final long startMicros;
         final long startFrame;
         final DecodedSampledResource resource;
-        final int frameCount;
+        int frameCount;
         final int logicalChannel;
+        final int resourceIndex;
         final int startLevel;
         final int globalSampledLevel;
         final List<AudioPlaybackSource.GainSegment> gainSegments =
@@ -250,6 +269,7 @@ public final class AudioRenderer {
                 DecodedSampledResource resource,
                 int frameCount,
                 int logicalChannel,
+                int resourceIndex,
                 int startLevel,
                 int globalSampledLevel,
                 int leftGain,
@@ -259,9 +279,17 @@ public final class AudioRenderer {
             this.resource = resource;
             this.frameCount = frameCount;
             this.logicalChannel = logicalChannel;
+            this.resourceIndex = resourceIndex;
             this.startLevel = startLevel;
             this.globalSampledLevel = globalSampledLevel;
             addGainSegment(0, leftGain, rightGain);
+        }
+
+        void stopAt(long stopFrame) {
+            long sourceFrame = stopFrame - startFrame;
+            if (sourceFrame >= 0L && sourceFrame < frameCount) {
+                frameCount = (int)sourceFrame;
+            }
         }
 
         void addGainSegment(int sourceFrame, int leftGain, int rightGain) {
@@ -347,7 +375,9 @@ public final class AudioRenderer {
             }
         }
         for (AudioProgram.AudioAction action : program.audio.actions) {
-            if (hasResourceExecution && action.kind == AudioProgram.ActionKind.RESOURCE_STOP) return true;
+            if (hasResourceExecution
+                    && action.kind == AudioProgram.ActionKind.RESOURCE_STOP
+                    && !isVerifiedResourceStop(action)) return true;
             if (hasResourceExecution
                     && action.kind == AudioProgram.ActionKind.CHANNEL_ROUTE
                     && action.value != 0) return true;
@@ -385,6 +415,13 @@ public final class AudioRenderer {
                 || (action.sourceKind == AudioProgram.SourceKind.MACHINE_DEPENDENT
                 && action.descriptorIndex == 21
                 && action.handlerId == 0x105));
+    }
+
+    private static boolean isVerifiedResourceStop(AudioProgram.AudioAction action) {
+        return action.sourceKind == AudioProgram.SourceKind.RESOURCE_7F
+                && action.kind == AudioProgram.ActionKind.RESOURCE_STOP
+                && action.logicalChannel >= 0
+                && action.resourceIndex >= 0;
     }
 
     private static boolean isVerifiedResourceStart(AudioProgram.AudioAction action) {

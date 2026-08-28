@@ -67,7 +67,7 @@ ant
 ## Known Gaps
 
 - Sampled-audio rendering covers the verified machine-dependent `71:84` 4-bit profile and ordinary active-`adat` selector `0x81` 4-bit route-0 profile.
-- `0x8000`, `0x8001` 2-bit, `0x8002`, `0x8003`, `71:86`, ordinary resource stop, and sampled routes `2..9` remain fail-closed.
+- `0x8000`, `0x8001` 2-bit, `0x8002`, `0x8003`, `71:86`, and sampled routes `2..9` remain fail-closed.
 - Proprietary MFi synthesizer backend requests remain typed semantic evidence outside host MIDI rendering.
 
 ---

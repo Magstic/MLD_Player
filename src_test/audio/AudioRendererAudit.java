@@ -26,6 +26,7 @@ public final class AudioRendererAudit {
         auditVerifiedMixerVectors();
         auditVerifiedLegacyRendererWiring();
         auditActiveAdatRendererWiring();
+        auditActiveAdatResourceStop();
         auditActiveAdatResourceLevelOwnership();
         auditActiveAdatLiveChannelControls();
         auditSharedLogicalSampledChannelOwners();
@@ -159,6 +160,28 @@ public final class AudioRendererAudit {
                 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
                 0, 0, 1, 1, 3, 3, 5, 5, 7, 7, 7, 7, 7, 7, 7, 7
         }, rendered.copyInterleavedPcm16());
+    }
+
+    private static void auditActiveAdatResourceStop() {
+        byte[] encoded = repeatedEncoded(128);
+        List<TrackEvent> baselineEvents = new ArrayList<TrackEvent>();
+        baselineEvents.add(resource(0, 0, 0x80, 0x3C));
+        baselineEvents.add(resource(1, 0, 0x00, 0x00, 0x3C));
+        NativeProgram baselineProgram = compile(
+                activeAdatDocument(0x08, 0x04, 0x01, encoded), baselineEvents, 2);
+        StereoPcm baseline = new AudioRenderer().render(baselineProgram);
+
+        List<TrackEvent> stoppedEvents = new ArrayList<TrackEvent>(baselineEvents);
+        stoppedEvents.add(resource(2, 1, 0x01, 0x00));
+        NativeProgram stoppedProgram = compile(
+                activeAdatDocument(0x08, 0x04, 0x01, encoded), stoppedEvents, 2);
+        AudioRenderer renderer = new AudioRenderer();
+        if (!renderer.hasRenderableAudio(stoppedProgram)) {
+            fail("active adat stop renderable", "false");
+        }
+        int stopFrame = controlFrame(stoppedProgram, 1);
+        assertSilentAfter("7F:01 stops the matching active resource voice",
+                baseline, renderer.render(stoppedProgram), stopFrame);
     }
 
     private static void auditActiveAdatResourceLevelOwnership() {

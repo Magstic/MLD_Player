@@ -229,7 +229,7 @@ Production ordinary sampled-SFX profile:
 - output route `0`
 - final stream `32000 Hz`, PCM16, stereo
 
-`7F:00` starts the typed resource. `7F:80` and `7F:81` update its logical-channel level and pan. `7F:90` selects its sampled route.
+`7F:00` starts the typed resource. `7F:01` stops active voices matching the same logical sampled channel and resource index without unloading the resource. `7F:80` and `7F:81` update its logical-channel level and pan. `7F:90` selects its sampled route.
 
 ## Track Event Stream
 
@@ -406,7 +406,7 @@ Packed value fields:
 |---|---|
 | `E0` | program=`low6`; patch helper runs |
 | `E1` | bank=`low6`; patch helper runs for mode `1` |
-| `E2` | level=`low6`; backend value=`2*level` |
+| `E2` | level=`low6`; backend value=`2*level`; backend level `0` is zero gain |
 | `E3` | pan=`low6`; backend value=`2*pan` |
 | `E4` | pitch coarse=`low6`; immediate pitch apply using cached fine byte |
 | `E5` | selected local voice maps to logical channel `low6` |
