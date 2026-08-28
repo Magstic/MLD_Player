@@ -1,12 +1,6 @@
 package audio;
 
-/**
- * MFiAudio codec 0x8001 decoder for the 4-bit legacy sampled-audio path.
- *
- * <p>Ported verbatim from the verified MldEngine implementation supplied by the
- * project owner. That implementation was checked on 61 real legacy payloads against
- * FFmpeg g726le with byte-identical PCM. MFi packs 4-bit codewords low nibble first.</p>
- */
+/** MFiAudio codec 0x8001 decoder for the 4-bit legacy sampled-audio path. */
 public final class MfiG726Decoder {
     private static final int[] IQUANT = {
         -32768, 4, 135, 213, 273, 323, 373, 425,
@@ -140,9 +134,8 @@ public final class MfiG726Decoder {
             }
             se >>= 1;
 
-            /* G.726 decoder output is a 14-bit reconstructed signal expanded to PCM16. */
-            int pcm = clip(reconstructed << 2, -65535, 65535);
-            return (short)pcm;
+            /* MFiAudio saturates the 14-bit reconstruction before PCM16 expansion. */
+            return (short)(clip(reconstructed, -8192, 8191) << 2);
         }
 
         private int inverseQuantize(int code) {

@@ -20,8 +20,10 @@ import mld.format.MldDocument;
  * state and freezes it into {@link AudioProgram}.
  */
 final class AudioSemanticState {
-    private static final int INITIAL_GLOBAL_LEVEL = 64;
-    private static final int RESET_GLOBAL_LEVEL = 100;
+    private static final int INITIAL_MASTER_VOLUME = 100;
+    private static final int DEFAULT_RESOURCE_LEVEL = 127;
+    private static final int DEFAULT_RESOURCE_PAN = 64;
+    private static final int DEFAULT_GLOBAL_SAMPLED_LEVEL = 64;
 
     private final List<AudioProgram.ResourceCatalogEntry> catalog;
     private final List<AudioProgram.InitialChannelConfig> initialConfigs;
@@ -41,7 +43,9 @@ final class AudioSemanticState {
     private final MachineDescriptorMatcher descriptorMatcher = new MachineDescriptorMatcher();
     private final List<String> warnings;
     private final Set<String> warningKeys;
-    private int globalLevel = INITIAL_GLOBAL_LEVEL;
+    private int masterVolume = INITIAL_MASTER_VOLUME;
+    private int resourceLevel = DEFAULT_RESOURCE_LEVEL;
+    private int resourcePan = DEFAULT_RESOURCE_PAN;
 
     AudioSemanticState(MldDocument document, List<String> warnings, Set<String> warningKeys) {
         this.warnings = warnings;
@@ -126,18 +130,41 @@ final class AudioSemanticState {
             return;
         }
         if (event.command == 0xBF) {
-            globalLevel = RESET_GLOBAL_LEVEL;
-        } else if (event.command == 0xB0 && event.value >= 0 && event.value < 0x80) {
-            globalLevel = event.value;
-        } else if (event.command == 0xBD && event.value >= 0 && event.value < 0x80) {
-            globalLevel = clamp(0, 127, globalLevel + event.value - 0x40);
+            masterVolume = INITIAL_MASTER_VOLUME;
+            return;
+        }
+        if (event.value < 0 || event.value >= 0x80) {
+            return;
+        }
+
+        AudioProgram.ActionKind kind;
+        int value;
+        if (event.command == 0xB0) {
+            masterVolume = event.value;
+            resourceLevel = masterVolume;
+            kind = AudioProgram.ActionKind.RESOURCE_LEVEL;
+            value = resourceLevel;
+        } else if (event.command == 0xBD) {
+            masterVolume = clamp(0, 127, masterVolume + event.value - 0x40);
+            resourceLevel = masterVolume;
+            kind = AudioProgram.ActionKind.RESOURCE_LEVEL;
+            value = resourceLevel;
+        } else if (event.command == 0xB1) {
+            resourcePan = event.value;
+            kind = AudioProgram.ActionKind.RESOURCE_PAN;
+            value = resourcePan;
         } else {
             return;
         }
-        actions.add(new AudioProgram.AudioAction(
+        actions.add(systemControlAction(event, order, kind, value));
+    }
+
+    private static AudioProgram.AudioAction systemControlAction(
+            SystemEvent event, int order, AudioProgram.ActionKind kind, int value) {
+        return new AudioProgram.AudioAction(
                 order,
                 AudioProgram.SourceKind.SYSTEM,
-                AudioProgram.ActionKind.GLOBAL_LEVEL,
+                kind,
                 event.trackIndex,
                 event.eventIndex,
                 event.rawTick,
@@ -156,14 +183,14 @@ final class AudioSemanticState {
                 -1,
                 -1,
                 -1L,
-                globalLevel,
+                value,
                 false,
                 false,
                 true,
                 AudioProgram.RendererSupport.CONTROL_ONLY,
                 AudioProgram.BranchEffect.BACKEND_ACTION,
                 AudioProgram.BranchEffect.STATE_ONLY,
-                null));
+                null);
     }
 
     AudioProgram finish() {
@@ -206,7 +233,9 @@ final class AudioSemanticState {
                 slotSnapshots,
                 configSnapshots,
                 new AudioProgram.RouteState(routeFlags, routeClasses),
-                globalLevel,
+                resourceLevel,
+                resourcePan,
+                DEFAULT_GLOBAL_SAMPLED_LEVEL,
                 diagnostics);
     }
 

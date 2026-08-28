@@ -13,7 +13,6 @@ public final class AudioRenderer {
     private static final int DEFAULT_RESOURCE_LEVEL = 127;
     private static final int DEFAULT_START_LEVEL = 127;
     private static final int DEFAULT_CHANNEL_LEVEL = 127;
-    private static final int DEFAULT_GLOBAL_LEVEL = 64;
     private static final int DEFAULT_RESOURCE_PAN = 64;
     private static final int DEFAULT_CHANNEL_PAN = 64;
     private static final int DEFAULT_ROUTE = 0;
@@ -59,8 +58,7 @@ public final class AudioRenderer {
                 1L, AudioPlaybackSource.microsToFrameCeil(semanticEndMicros, targetRate));
         for (AudioProgram.AudioAction action : program.audio.actions) {
             if (!isVerifiedMachineStart(action) && !isVerifiedResourceStart(action)) continue;
-            long renderedFrames = exactDecodedFrameCount(action.durationByteCount,
-                    action.sampleRate, action.codedBits, action.channelCount);
+            long renderedFrames = estimatedRenderedFrameCount(action);
             long startMicros = program.timing.rawTickToMicros(action.rawTick);
             long startFrame = AudioPlaybackSource.microsToFrameFloor(startMicros, targetRate);
             linearEndFrame = Math.max(linearEndFrame,
@@ -71,41 +69,45 @@ public final class AudioRenderer {
     }
 
     private AudioPlaybackSource prepareNativePlayback(NativeProgram program) {
-        Map<Integer, Integer> resourceChannelLevels = new HashMap<Integer, Integer>();
-        Map<Integer, Integer> resourceChannelPans = new HashMap<Integer, Integer>();
+        Map<Integer, Integer> channelLevels = new HashMap<Integer, Integer>();
+        Map<Integer, Integer> channelPans = new HashMap<Integer, Integer>();
         Map<Integer, Integer> resourceChannelRoutes = new HashMap<Integer, Integer>();
-        Map<Integer, Integer> machinePartLevels = new HashMap<Integer, Integer>();
-        Map<Integer, Integer> machinePartPans = new HashMap<Integer, Integer>();
         Map<Integer, DecodedSampledResource> activeResourceCache =
                 new HashMap<Integer, DecodedSampledResource>();
         List<MutableVoice> voiceBuilders = new ArrayList<MutableVoice>();
-        int machineGlobalLevel = DEFAULT_GLOBAL_LEVEL;
+        int resourceLevel = DEFAULT_RESOURCE_LEVEL;
+        int resourcePan = DEFAULT_RESOURCE_PAN;
+        int globalSampledLevel = program.audio.globalSampledLevel;
 
         for (AudioProgram.AudioAction action : program.audio.actions) {
-            if (action.kind == AudioProgram.ActionKind.CHANNEL_LEVEL && action.logicalChannel >= 0) {
-                if (action.sourceKind == AudioProgram.SourceKind.RESOURCE_7F) {
-                    resourceChannelLevels.put(
-                            Integer.valueOf(action.logicalChannel), Integer.valueOf(action.value));
-                    updateLiveResourceVoices(
-                            voiceBuilders, program, action,
-                            resourceChannelLevels, resourceChannelPans);
-                } else if (isVerifiedPartVolume(action)) {
-                    machinePartLevels.put(
-                            Integer.valueOf(action.logicalChannel), Integer.valueOf(action.value));
-                }
+            if (action.kind == AudioProgram.ActionKind.RESOURCE_LEVEL && action.value >= 0) {
+                resourceLevel = action.value;
+                updateLiveVoices(
+                        voiceBuilders, program, action, -1,
+                        resourceLevel, resourcePan, channelLevels, channelPans);
                 continue;
             }
-            if (action.kind == AudioProgram.ActionKind.CHANNEL_PAN && action.logicalChannel >= 0) {
-                if (action.sourceKind == AudioProgram.SourceKind.RESOURCE_7F) {
-                    resourceChannelPans.put(
-                            Integer.valueOf(action.logicalChannel), Integer.valueOf(action.value));
-                    updateLiveResourceVoices(
-                            voiceBuilders, program, action,
-                            resourceChannelLevels, resourceChannelPans);
-                } else if (isVerifiedPartPan(action)) {
-                    machinePartPans.put(
-                            Integer.valueOf(action.logicalChannel), Integer.valueOf(action.value));
-                }
+            if (action.kind == AudioProgram.ActionKind.RESOURCE_PAN && action.value >= 0) {
+                resourcePan = action.value;
+                updateLiveVoices(
+                        voiceBuilders, program, action, -1,
+                        resourceLevel, resourcePan, channelLevels, channelPans);
+                continue;
+            }
+            if (isVerifiedChannelLevel(action)) {
+                channelLevels.put(
+                        Integer.valueOf(action.logicalChannel), Integer.valueOf(action.value));
+                updateLiveVoices(
+                        voiceBuilders, program, action, action.logicalChannel,
+                        resourceLevel, resourcePan, channelLevels, channelPans);
+                continue;
+            }
+            if (isVerifiedChannelPan(action)) {
+                channelPans.put(
+                        Integer.valueOf(action.logicalChannel), Integer.valueOf(action.value));
+                updateLiveVoices(
+                        voiceBuilders, program, action, action.logicalChannel,
+                        resourceLevel, resourcePan, channelLevels, channelPans);
                 continue;
             }
             if (action.kind == AudioProgram.ActionKind.CHANNEL_ROUTE && action.logicalChannel >= 0) {
@@ -113,15 +115,12 @@ public final class AudioRenderer {
                         Integer.valueOf(action.logicalChannel), Integer.valueOf(action.value));
                 continue;
             }
-            if (action.kind == AudioProgram.ActionKind.GLOBAL_LEVEL && action.value >= 0) {
-                machineGlobalLevel = action.value;
-                continue;
-            }
 
             DecodedSampledResource decoded;
             int startLevel;
-            int sampledGlobalLevel;
-            if (isVerifiedResourceStart(action)) {
+            int voiceFrameCount;
+            boolean resourceStart = isVerifiedResourceStart(action);
+            if (resourceStart) {
                 AudioProgram.ResourceCatalogEntry entry = resourceEntry(program, action.linkedCatalogIndex);
                 if (entry == null || entry.sampledResource == null) {
                     throw new IllegalArgumentException("verified resource start has no typed sampled resource");
@@ -136,26 +135,21 @@ public final class AudioRenderer {
                     activeResourceCache.put(key, decoded);
                 }
                 startLevel = action.value >= 0 ? action.value : 126;
-                sampledGlobalLevel = DEFAULT_GLOBAL_LEVEL;
+                voiceFrameCount = decoded.getFrameCount();
             } else if (isVerifiedMachineStart(action)) {
                 decoded = Mfi8001Decoder.decode(
                         action.copyEncodedPayload(), action.sampleRate,
                         action.codedBits, action.channelCount);
                 startLevel = DEFAULT_START_LEVEL;
-                sampledGlobalLevel = machineGlobalLevel;
+                voiceFrameCount = durationLimitedFrameCount(decoded, action.durationMs);
             } else {
                 continue;
             }
 
-            boolean resourceStart = isVerifiedResourceStart(action);
-            Map<Integer, Integer> levels = resourceStart
-                    ? resourceChannelLevels : machinePartLevels;
-            Map<Integer, Integer> pans = resourceStart
-                    ? resourceChannelPans : machinePartPans;
             int channelLevel = valueOrDefault(
-                    levels, action.logicalChannel, DEFAULT_CHANNEL_LEVEL);
+                    channelLevels, action.logicalChannel, DEFAULT_CHANNEL_LEVEL);
             int channelPan = valueOrDefault(
-                    pans, action.logicalChannel, DEFAULT_CHANNEL_PAN);
+                    channelPans, action.logicalChannel, DEFAULT_CHANNEL_PAN);
             int route = resourceStart
                     ? valueOrDefault(resourceChannelRoutes, action.logicalChannel, DEFAULT_ROUTE)
                     : DEFAULT_ROUTE;
@@ -165,11 +159,11 @@ public final class AudioRenderer {
             }
 
             int leftGain = MfiAudioMixer.leftVoiceGain(
-                    DEFAULT_RESOURCE_LEVEL, startLevel, channelLevel, sampledGlobalLevel,
-                    DEFAULT_RESOURCE_PAN, channelPan);
+                    resourceLevel, startLevel, channelLevel, globalSampledLevel,
+                    resourcePan, channelPan);
             int rightGain = MfiAudioMixer.rightVoiceGain(
-                    DEFAULT_RESOURCE_LEVEL, startLevel, channelLevel, sampledGlobalLevel,
-                    DEFAULT_RESOURCE_PAN, channelPan);
+                    resourceLevel, startLevel, channelLevel, globalSampledLevel,
+                    resourcePan, channelPan);
             long startMicros = program.timing.rawTickToMicros(action.rawTick);
             long startFrame = AudioPlaybackSource.microsToFrameFloor(
                     startMicros, AudioPlaybackSource.NATIVE_SAMPLE_RATE);
@@ -177,10 +171,10 @@ public final class AudioRenderer {
                     startMicros,
                     startFrame,
                     decoded,
+                    voiceFrameCount,
                     action.logicalChannel,
                     startLevel,
-                    sampledGlobalLevel,
-                    resourceStart,
+                    globalSampledLevel,
                     leftGain,
                     rightGain));
         }
@@ -202,41 +196,51 @@ public final class AudioRenderer {
                 voices);
     }
 
-    private static void updateLiveResourceVoices(
+    private static void updateLiveVoices(
             List<MutableVoice> voices,
             NativeProgram program,
             AudioProgram.AudioAction action,
+            int logicalChannel,
+            int resourceLevel,
+            int resourcePan,
             Map<Integer, Integer> channelLevels,
             Map<Integer, Integer> channelPans) {
         long controlMicros = program.timing.rawTickToMicros(action.rawTick);
         long controlFrame = AudioPlaybackSource.microsToFrameFloor(
                 controlMicros, AudioPlaybackSource.NATIVE_SAMPLE_RATE);
-        int channelLevel = valueOrDefault(
-                channelLevels, action.logicalChannel, DEFAULT_CHANNEL_LEVEL);
-        int channelPan = valueOrDefault(
-                channelPans, action.logicalChannel, DEFAULT_CHANNEL_PAN);
         for (MutableVoice voice : voices) {
-            if (!voice.liveResourceControls || voice.logicalChannel != action.logicalChannel) continue;
+            if (logicalChannel >= 0 && voice.logicalChannel != logicalChannel) continue;
             long sourceFrame = controlFrame - voice.startFrame;
-            if (sourceFrame < 0L || sourceFrame >= voice.resource.getFrameCount()) continue;
+            if (sourceFrame < 0L || sourceFrame >= voice.frameCount) continue;
+            int channelLevel = valueOrDefault(
+                    channelLevels, voice.logicalChannel, DEFAULT_CHANNEL_LEVEL);
+            int channelPan = valueOrDefault(
+                    channelPans, voice.logicalChannel, DEFAULT_CHANNEL_PAN);
             int leftGain = MfiAudioMixer.leftVoiceGain(
-                    DEFAULT_RESOURCE_LEVEL, voice.startLevel, channelLevel, voice.globalLevel,
-                    DEFAULT_RESOURCE_PAN, channelPan);
+                    resourceLevel, voice.startLevel, channelLevel, voice.globalSampledLevel,
+                    resourcePan, channelPan);
             int rightGain = MfiAudioMixer.rightVoiceGain(
-                    DEFAULT_RESOURCE_LEVEL, voice.startLevel, channelLevel, voice.globalLevel,
-                    DEFAULT_RESOURCE_PAN, channelPan);
+                    resourceLevel, voice.startLevel, channelLevel, voice.globalSampledLevel,
+                    resourcePan, channelPan);
             voice.addGainSegment((int)sourceFrame, leftGain, rightGain);
         }
+    }
+
+    private static int durationLimitedFrameCount(DecodedSampledResource decoded, long durationMs) {
+        if (durationMs < 0L) return decoded.getFrameCount();
+        long durationFrames = AudioPlaybackSource.safeMultiply(
+                durationMs, AudioPlaybackSource.NATIVE_SAMPLE_RATE / 1000L);
+        return (int)Math.min((long)decoded.getFrameCount(), durationFrames);
     }
 
     private static final class MutableVoice {
         final long startMicros;
         final long startFrame;
         final DecodedSampledResource resource;
+        final int frameCount;
         final int logicalChannel;
         final int startLevel;
-        final int globalLevel;
-        final boolean liveResourceControls;
+        final int globalSampledLevel;
         final List<AudioPlaybackSource.GainSegment> gainSegments =
                 new ArrayList<AudioPlaybackSource.GainSegment>();
 
@@ -244,19 +248,19 @@ public final class AudioRenderer {
                 long startMicros,
                 long startFrame,
                 DecodedSampledResource resource,
+                int frameCount,
                 int logicalChannel,
                 int startLevel,
-                int globalLevel,
-                boolean liveResourceControls,
+                int globalSampledLevel,
                 int leftGain,
                 int rightGain) {
             this.startMicros = startMicros;
             this.startFrame = startFrame;
             this.resource = resource;
+            this.frameCount = frameCount;
             this.logicalChannel = logicalChannel;
             this.startLevel = startLevel;
-            this.globalLevel = globalLevel;
-            this.liveResourceControls = liveResourceControls;
+            this.globalSampledLevel = globalSampledLevel;
             addGainSegment(0, leftGain, rightGain);
         }
 
@@ -273,7 +277,7 @@ public final class AudioRenderer {
 
         AudioPlaybackSource.Voice freeze() {
             return new AudioPlaybackSource.Voice(
-                    startMicros, startFrame, resource, gainSegments);
+                    startMicros, startFrame, resource, frameCount, gainSegments);
         }
     }
 
@@ -283,6 +287,17 @@ public final class AudioRenderer {
             if (entry.catalogIndex == catalogIndex) return entry;
         }
         return null;
+    }
+
+    private static long estimatedRenderedFrameCount(AudioProgram.AudioAction action) {
+        int compressedBytes = isVerifiedMachineStart(action)
+                ? action.encodedPayloadLength() : action.durationByteCount;
+        long decodedFrames = exactDecodedFrameCount(
+                compressedBytes, action.sampleRate, action.codedBits, action.channelCount);
+        if (!isVerifiedMachineStart(action) || action.durationMs < 0L) return decodedFrames;
+        long durationFrames = AudioPlaybackSource.safeMultiply(
+                action.durationMs, AudioPlaybackSource.NATIVE_SAMPLE_RATE / 1000L);
+        return Math.min(decodedFrames, durationFrames);
     }
 
     private static long exactDecodedFrameCount(
@@ -354,18 +369,22 @@ public final class AudioRenderer {
         return false;
     }
 
-    private static boolean isVerifiedPartVolume(AudioProgram.AudioAction action) {
-        return action.sourceKind == AudioProgram.SourceKind.MACHINE_DEPENDENT
+    private static boolean isVerifiedChannelLevel(AudioProgram.AudioAction action) {
+        return action.kind == AudioProgram.ActionKind.CHANNEL_LEVEL
+                && action.logicalChannel >= 0
+                && (action.sourceKind == AudioProgram.SourceKind.RESOURCE_7F
+                || (action.sourceKind == AudioProgram.SourceKind.MACHINE_DEPENDENT
                 && action.descriptorIndex == 18
-                && action.handlerId == 0x000
-                && action.kind == AudioProgram.ActionKind.CHANNEL_LEVEL;
+                && action.handlerId == 0x000));
     }
 
-    private static boolean isVerifiedPartPan(AudioProgram.AudioAction action) {
-        return action.sourceKind == AudioProgram.SourceKind.MACHINE_DEPENDENT
+    private static boolean isVerifiedChannelPan(AudioProgram.AudioAction action) {
+        return action.kind == AudioProgram.ActionKind.CHANNEL_PAN
+                && action.logicalChannel >= 0
+                && (action.sourceKind == AudioProgram.SourceKind.RESOURCE_7F
+                || (action.sourceKind == AudioProgram.SourceKind.MACHINE_DEPENDENT
                 && action.descriptorIndex == 21
-                && action.handlerId == 0x105
-                && action.kind == AudioProgram.ActionKind.CHANNEL_PAN;
+                && action.handlerId == 0x105));
     }
 
     private static boolean isVerifiedResourceStart(AudioProgram.AudioAction action) {
@@ -385,7 +404,6 @@ public final class AudioRenderer {
                 && action.kind == AudioProgram.ActionKind.SLOT_LOAD_AND_START
                 && action.audioType == AudioProgram.AudioType.MFI_8001
                 && action.operation == 1
-                && action.controlFlag == 0
                 && Mfi8001Decoder.supports(action.sampleRate, action.codedBits, action.channelCount);
     }
 

@@ -42,7 +42,7 @@ public final class AudioPlaybackSource {
         this.voices = Collections.unmodifiableList(new ArrayList<Voice>(voices));
         long end = Math.max(1L, semanticEndFrame);
         for (Voice voice : voices) {
-            end = Math.max(end, safeAdd(voice.startFrame, voice.resource.getFrameCount()));
+            end = Math.max(end, safeAdd(voice.startFrame, voice.frameCount));
         }
         this.linearFrameCount = end;
     }
@@ -95,20 +95,26 @@ public final class AudioPlaybackSource {
         final long startMicros;
         final long startFrame;
         final DecodedSampledResource resource;
+        final int frameCount;
         final GainSegment[] gainSegments;
 
         Voice(
                 long startMicros,
                 long startFrame,
                 DecodedSampledResource resource,
+                int frameCount,
                 List<GainSegment> gainSegments) {
             if (resource == null) throw new IllegalArgumentException("resource == null");
             if (gainSegments == null || gainSegments.isEmpty()) {
                 throw new IllegalArgumentException("gainSegments is empty");
             }
+            if (frameCount < 0 || frameCount > resource.getFrameCount()) {
+                throw new IllegalArgumentException("invalid voice frame count");
+            }
             this.startMicros = Math.max(0L, startMicros);
             this.startFrame = Math.max(0L, startFrame);
             this.resource = resource;
+            this.frameCount = frameCount;
             this.gainSegments = gainSegments.toArray(new GainSegment[gainSegments.size()]);
             if (this.gainSegments[0].sourceFrame != 0) {
                 throw new IllegalArgumentException("first gain segment must start at source frame 0");
@@ -136,7 +142,7 @@ public final class AudioPlaybackSource {
             long chunkEndFrame,
             Voice voice,
             long instanceStartFrame) {
-        long voiceEnd = safeAdd(instanceStartFrame, voice.resource.getFrameCount());
+        long voiceEnd = safeAdd(instanceStartFrame, voice.frameCount);
         long overlapStart = Math.max(chunkStartFrame, instanceStartFrame);
         long overlapEnd = Math.min(chunkEndFrame, voiceEnd);
         if (overlapStart >= overlapEnd) return;

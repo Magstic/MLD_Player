@@ -26,10 +26,12 @@ public final class AudioRendererAudit {
         auditVerifiedMixerVectors();
         auditVerifiedLegacyRendererWiring();
         auditActiveAdatRendererWiring();
-        auditActiveAdatGlobalLevelOwnership();
+        auditActiveAdatResourceLevelOwnership();
         auditActiveAdatLiveChannelControls();
-        auditSampledControlOwnersRemainSeparate();
+        auditSharedLogicalSampledChannelOwners();
         auditActiveAdatUnsupportedProfilesFailClosed();
+        auditMachineDurationLimit();
+        auditMachineLiveControls();
         auditLightweightLinearDuration();
         auditVoiceStartStateAndTiming();
         auditUnverifiedControlDoesNotPolluteVerifiedMix();
@@ -49,8 +51,14 @@ public final class AudioRendererAudit {
                 0, 0, 16, 8, 36, 28, 68, 76, -132,
                 468, -920, -1500, -1060, -1428, -620, -836, -332, -244
         };
-        eqShorts("MldEngine G.726 vector", expected,
+        eqShorts("G.726 predictor vector", expected,
                 MfiG726Decoder.decode4BitLittleEndian(encoded));
+
+        eqShorts("MFiAudio G.726 reconstruction saturation", new short[] {
+                88, 104, 128, 192, 260, 416, 640, 1128, 2244, 5008, 14620, 32764
+        }, MfiG726Decoder.decode4BitLittleEndian(new byte[] {
+                0x77, 0x77, 0x77, 0x77, 0x77, 0x77
+        }));
     }
 
     private static void auditMfi8001ProfileFraming() {
@@ -153,27 +161,24 @@ public final class AudioRendererAudit {
         }, rendered.copyInterleavedPcm16());
     }
 
-    private static void auditActiveAdatGlobalLevelOwnership() {
+    private static void auditActiveAdatResourceLevelOwnership() {
         byte[] encoded = new byte[] {0x12, 0x34};
-        List<TrackEvent> baselineEvents = new ArrayList<TrackEvent>();
-        baselineEvents.add(resource(0, 0, 0x80, 0x3C));
-        baselineEvents.add(resource(1, 0, 0x00, 0x00, 0x3C));
-        StereoPcm baseline = new AudioRenderer().render(compile(
-                activeAdatDocument(0x08, 0x04, 0x01, encoded), baselineEvents, 0));
-
-        List<TrackEvent> withSystemLevel = new ArrayList<TrackEvent>();
-        withSystemLevel.add(system(0, 0, 0xB0, 108));
-        withSystemLevel.add(resource(1, 0, 0x80, 0x3C));
-        withSystemLevel.add(resource(2, 0, 0x00, 0x00, 0x3C));
-        StereoPcm rendered = new AudioRenderer().render(compile(
-                activeAdatDocument(0x08, 0x04, 0x01, encoded), withSystemLevel, 0));
-        eqShorts("active adat uses stock sampled global level 64",
-                baseline.copyInterleavedPcm16(), rendered.copyInterleavedPcm16());
+        List<TrackEvent> events = new ArrayList<TrackEvent>();
+        events.add(system(0, 0, 0xB0, 108));
+        events.add(resource(1, 0, 0x80, 0x3C));
+        events.add(resource(2, 0, 0x00, 0x00, 0x3C));
+        NativeProgram program = compile(
+                activeAdatDocument(0x08, 0x04, 0x01, encoded), events, 0);
+        eq("B0 sampled resource level", 108, program.audio.resourceLevel);
+        eq("B0 leaves sampled global level independent", 64, program.audio.globalSampledLevel);
+        eqShorts("active adat consumes B0 as resource level", new short[] {
+                0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                0, 0, 1, 1, 2, 2, 4, 4, 5, 5, 5, 5, 5, 5, 5, 5
+        }, new AudioRenderer().render(program).copyInterleavedPcm16());
     }
 
     private static void auditActiveAdatLiveChannelControls() {
-        byte[] encoded = new byte[128];
-        for (int i = 0; i < encoded.length; i++) encoded[i] = (byte)((i & 1) == 0 ? 0x12 : 0x34);
+        byte[] encoded = repeatedEncoded(128);
 
         List<TrackEvent> baselineEvents = new ArrayList<TrackEvent>();
         baselineEvents.add(resource(0, 0, 0x80, 0x3C));
@@ -188,10 +193,8 @@ public final class AudioRendererAudit {
         StereoPcm muted = new AudioRenderer().render(compile(
                 activeAdatDocument(0x08, 0x04, 0x01, encoded), mutedEvents, 2));
 
-        int controlFrame = (int)AudioPlaybackSource.microsToFrameFloor(
-                compile(activeAdatDocument(0x08, 0x04, 0x01, encoded), mutedEvents, 2)
-                        .timing.rawTickToMicros(1),
-                AudioPlaybackSource.NATIVE_SAMPLE_RATE);
+        int controlFrame = controlFrame(
+                compile(activeAdatDocument(0x08, 0x04, 0x01, encoded), mutedEvents, 2), 1);
         short[] basePcm = baseline.copyInterleavedPcm16();
         short[] mutedPcm = muted.copyInterleavedPcm16();
         boolean baselineHasPostControlSignal = false;
@@ -207,35 +210,49 @@ public final class AudioRendererAudit {
         if (!baselineHasPostControlSignal) {
             fail("live sampled channel level baseline", "fixture has no post-control signal");
         }
+
+        List<TrackEvent> pannedEvents = new ArrayList<TrackEvent>();
+        pannedEvents.add(resource(0, 0, 0x80, 0x3C));
+        pannedEvents.add(resource(1, 0, 0x00, 0x00, 0x3C));
+        pannedEvents.add(resource(2, 1, 0x81, 0x00));
+        NativeProgram pannedProgram = compile(
+                activeAdatDocument(0x08, 0x04, 0x01, encoded), pannedEvents, 2);
+        assertLeftSilentAfter("7F:81 updates an active sampled voice",
+                new AudioRenderer().render(pannedProgram), controlFrame(pannedProgram, 1));
     }
 
-    private static void auditSampledControlOwnersRemainSeparate() {
+    private static void auditSharedLogicalSampledChannelOwners() {
         MachineDependentEvent machineStart = md(1, 0,
                 0x71, 0x84, 0x00, 0x45, 0x00,
                 0x00, 0x00, 0x00, 0x02, 0x12, 0x34);
-        StereoPcm machineBaseline = new AudioRenderer().render(compile(
-                Collections.<TrackEvent>singletonList(machineStart), 0));
         List<TrackEvent> resourceControlBeforeMachine = new ArrayList<TrackEvent>();
-        resourceControlBeforeMachine.add(resource(0, 0, 0x80, 0x01));
+        resourceControlBeforeMachine.add(resource(0, 0, 0x80, 0x00));
         resourceControlBeforeMachine.add(machineStart);
-        eqShorts("resource channel level does not pollute machine 0x8001",
-                machineBaseline.copyInterleavedPcm16(),
-                new AudioRenderer().render(compile(resourceControlBeforeMachine, 0))
-                        .copyInterleavedPcm16());
+        assertSilent("7F:80 owns machine logical sampled channel level",
+                new AudioRenderer().render(compile(resourceControlBeforeMachine, 0)));
+
+        List<TrackEvent> resourcePanBeforeMachine = new ArrayList<TrackEvent>();
+        resourcePanBeforeMachine.add(resource(0, 0, 0x81, 0x00));
+        resourcePanBeforeMachine.add(machineStart);
+        assertLeftSilentAfter("7F:81 owns machine logical sampled channel pan",
+                new AudioRenderer().render(compile(resourcePanBeforeMachine, 0)), 0);
 
         byte[] encoded = new byte[] {0x12, 0x34};
-        List<TrackEvent> resourceBaselineEvents = new ArrayList<TrackEvent>();
-        resourceBaselineEvents.add(resource(0, 0, 0x00, 0x00, 0x3C));
-        StereoPcm resourceBaseline = new AudioRenderer().render(compile(
-                activeAdatDocument(0x08, 0x04, 0x01, encoded), resourceBaselineEvents, 0));
         List<TrackEvent> machineControlBeforeResource = new ArrayList<TrackEvent>();
-        machineControlBeforeResource.add(md(0, 0, 0x71, 0x81, 0x01));
+        machineControlBeforeResource.add(md(0, 0, 0x71, 0x81, 0x00));
         machineControlBeforeResource.add(resource(1, 0, 0x00, 0x00, 0x3C));
-        eqShorts("machine part level does not pollute active adat",
-                resourceBaseline.copyInterleavedPcm16(),
+        assertSilent("71:81 owns active-adat logical sampled channel level",
                 new AudioRenderer().render(compile(
                         activeAdatDocument(0x08, 0x04, 0x01, encoded),
-                        machineControlBeforeResource, 0)).copyInterleavedPcm16());
+                        machineControlBeforeResource, 0)));
+
+        List<TrackEvent> machinePanBeforeResource = new ArrayList<TrackEvent>();
+        machinePanBeforeResource.add(md(0, 0, 0x71, 0x82, 0x00));
+        machinePanBeforeResource.add(resource(1, 0, 0x00, 0x00, 0x3C));
+        assertLeftSilentAfter("71:82 owns active-adat logical sampled channel pan",
+                new AudioRenderer().render(compile(
+                        activeAdatDocument(0x08, 0x04, 0x01, encoded),
+                        machinePanBeforeResource, 0)), 0);
     }
 
     private static void auditActiveAdatUnsupportedProfilesFailClosed() {
@@ -276,9 +293,64 @@ public final class AudioRendererAudit {
         for (int i = 0; i < 1280; i++) {
             if (pcm[i] != 0) fail("timed render silence", "nonzero sample before raw-tick start");
         }
-        eqShorts("voice-start level/pan/global state",
-                new short[] {2, 5, 2, 7, 3, 9, 4, 10},
+        eqShorts("voice-start resource/channel/global state",
+                new short[] {0, 1, 0, 1, 0, 2, 1, 2},
                 Arrays.copyOfRange(pcm, 1300, 1308));
+    }
+
+
+    private static void auditMachineDurationLimit() {
+        byte[] encoded = new byte[] {0x12, 0x34, 0x56, 0x78, (byte)0x9A};
+        NativeProgram program = compile(Collections.<TrackEvent>singletonList(
+                machineStart(0, 0, 3, encoded)), 0);
+        AudioProgram.AudioAction action = program.audio.actions.get(0);
+        eq("machine duration byte count", 3, action.durationByteCount);
+        eq("machine load keeps full body remainder", 5, action.encodedPayloadLength());
+        eqLong("machine rounded duration", 1L, action.durationMs);
+
+        AudioRenderer renderer = new AudioRenderer();
+        StereoPcm rendered = renderer.render(program);
+        eq("machine voice duration cap", 32, rendered.getFrameCount());
+        eqLong("machine capped linear duration", 1L,
+                renderer.estimateLinearDurationMillis(program));
+    }
+
+    private static void auditMachineLiveControls() {
+        byte[] encoded = repeatedEncoded(128);
+        MachineDependentEvent start = machineStart(0, 0, encoded.length, encoded);
+        StereoPcm baseline = new AudioRenderer().render(compile(
+                Collections.<TrackEvent>singletonList(start), 2));
+
+        List<TrackEvent> mutedByChannel = new ArrayList<TrackEvent>();
+        mutedByChannel.add(start);
+        mutedByChannel.add(md(1, 1, 0x71, 0x81, 0x00));
+        NativeProgram channelProgram = compile(mutedByChannel, 2);
+        assertSilentAfter("71:81 updates an active machine voice",
+                baseline, new AudioRenderer().render(channelProgram),
+                controlFrame(channelProgram, 1));
+
+        List<TrackEvent> pannedByChannel = new ArrayList<TrackEvent>();
+        pannedByChannel.add(start);
+        pannedByChannel.add(md(1, 1, 0x71, 0x82, 0x00));
+        NativeProgram channelPanProgram = compile(pannedByChannel, 2);
+        assertLeftSilentAfter("71:82 updates an active machine voice",
+                new AudioRenderer().render(channelPanProgram), controlFrame(channelPanProgram, 1));
+
+        List<TrackEvent> mutedByResource = new ArrayList<TrackEvent>();
+        mutedByResource.add(start);
+        mutedByResource.add(system(1, 1, 0xB0, 0));
+        NativeProgram resourceProgram = compile(mutedByResource, 2);
+        assertSilentAfter("B0 updates an active machine voice",
+                baseline, new AudioRenderer().render(resourceProgram),
+                controlFrame(resourceProgram, 1));
+
+        List<TrackEvent> pannedByResource = new ArrayList<TrackEvent>();
+        pannedByResource.add(start);
+        pannedByResource.add(system(1, 1, 0xB1, 127));
+        NativeProgram panProgram = compile(pannedByResource, 2);
+        StereoPcm panned = new AudioRenderer().render(panProgram);
+        assertRightSilentAfter("B1 updates an active machine voice",
+                panned, controlFrame(panProgram, 1));
     }
 
     private static void auditLightweightLinearDuration() {
@@ -413,7 +485,7 @@ public final class AudioRendererAudit {
                 0x00, 0x00, 0x00, 0x01,
                 0x12));
         NativeProgram program = compile(events, 0);
-        same("flags=1 typed but unsupported",
+        same("nonzero raw control byte typed but unsupported",
                 AudioProgram.RendererSupport.RECOGNIZED_UNSUPPORTED,
                 program.audio.actions.get(0).rendererSupport);
         try {
@@ -422,6 +494,83 @@ public final class AudioRendererAudit {
         } catch (IllegalArgumentException expected) {
             // expected
         }
+    }
+
+
+    private static MachineDependentEvent machineStart(
+            int eventIndex, int rawTick, int durationByteCount, byte[] encoded) {
+        int[] body = new int[9 + encoded.length];
+        body[0] = 0x71;
+        body[1] = 0x84;
+        body[2] = 0x00;
+        body[3] = 0x45;
+        body[4] = 0x00;
+        body[5] = (durationByteCount >>> 24) & 0xFF;
+        body[6] = (durationByteCount >>> 16) & 0xFF;
+        body[7] = (durationByteCount >>> 8) & 0xFF;
+        body[8] = durationByteCount & 0xFF;
+        for (int i = 0; i < encoded.length; i++) body[9 + i] = encoded[i] & 0xFF;
+        return md(eventIndex, rawTick, body);
+    }
+
+    private static byte[] repeatedEncoded(int length) {
+        byte[] encoded = new byte[length];
+        for (int i = 0; i < encoded.length; i++) {
+            encoded[i] = (byte)((i & 1) == 0 ? 0x12 : 0x34);
+        }
+        return encoded;
+    }
+
+    private static int controlFrame(NativeProgram program, int rawTick) {
+        return (int)AudioPlaybackSource.microsToFrameFloor(
+                program.timing.rawTickToMicros(rawTick), AudioPlaybackSource.NATIVE_SAMPLE_RATE);
+    }
+
+    private static void assertLeftSilentAfter(String name, StereoPcm pcm, int firstFrame) {
+        short[] samples = pcm.copyInterleavedPcm16();
+        boolean rightSignal = false;
+        for (int frame = firstFrame; frame < pcm.getFrameCount(); frame++) {
+            int sample = frame * 2;
+            if (samples[sample] != 0) fail(name, "left channel audible at frame " + frame);
+            if (samples[sample + 1] != 0) rightSignal = true;
+        }
+        if (!rightSignal) fail(name, "fixture has no right-channel signal");
+    }
+
+    private static void assertRightSilentAfter(String name, StereoPcm pcm, int firstFrame) {
+        short[] samples = pcm.copyInterleavedPcm16();
+        boolean leftSignal = false;
+        for (int frame = firstFrame; frame < pcm.getFrameCount(); frame++) {
+            int sample = frame * 2;
+            if (samples[sample] != 0) leftSignal = true;
+            if (samples[sample + 1] != 0) fail(name, "right channel audible at frame " + frame);
+        }
+        if (!leftSignal) fail(name, "fixture has no left-channel signal");
+    }
+
+    private static void assertSilent(String name, StereoPcm pcm) {
+        short[] samples = pcm.copyInterleavedPcm16();
+        for (int i = 0; i < samples.length; i++) {
+            if (samples[i] != 0) fail(name, "nonzero sample at index " + i);
+        }
+    }
+
+    private static void assertSilentAfter(
+            String name, StereoPcm baseline, StereoPcm actual, int firstFrame) {
+        short[] baselinePcm = baseline.copyInterleavedPcm16();
+        short[] actualPcm = actual.copyInterleavedPcm16();
+        boolean baselineSignal = false;
+        int endFrame = Math.min(baseline.getFrameCount(), actual.getFrameCount());
+        for (int frame = firstFrame; frame < endFrame; frame++) {
+            int sample = frame * 2;
+            if (baselinePcm[sample] != 0 || baselinePcm[sample + 1] != 0) {
+                baselineSignal = true;
+            }
+            if (actualPcm[sample] != 0 || actualPcm[sample + 1] != 0) {
+                fail(name, "nonzero sample at frame " + frame);
+            }
+        }
+        if (!baselineSignal) fail(name + " baseline", "fixture has no post-control signal");
     }
 
     private static NativeProgram compile(List<TrackEvent> events, int totalRawTicks) {

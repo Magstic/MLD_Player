@@ -116,13 +116,8 @@ final class MachineSlotInterpreter {
         int durationByteCount = countedDuration
                 ? MachineAudioSupport.readBe32(payload, match.bodyOffset + 3)
                 : payload.length - encodedOffset;
-        boolean payloadLengthValid = durationByteCount >= 0
-                && durationByteCount <= payload.length - encodedOffset;
-        int encodedEnd = countedDuration && payloadLengthValid
-                ? encodedOffset + durationByteCount
-                : payload.length;
-        byte[] encoded = MachineAudioSupport.slice(payload, encodedOffset, encodedEnd);
-        long durationMs = format == null || durationByteCount < 0
+        byte[] encoded = MachineAudioSupport.slice(payload, encodedOffset, payload.length);
+        long durationMs = format == null
                 ? -1L
                 : MachineAudioSupport.durationMilliseconds(
                         durationByteCount, format.sampleRate, format.codedBits);
@@ -131,7 +126,6 @@ final class MachineSlotInterpreter {
                 && match.descriptorIndex == 23
                 && operation == 1
                 && rawFlags == 0
-                && payloadLengthValid
                 && format != null
                 && format.codedBits == 4
                 && format.channelCount == 1;
@@ -139,13 +133,6 @@ final class MachineSlotInterpreter {
                 ? AudioProgram.RendererSupport.VERIFIED_8001_4BIT
                 : AudioProgram.RendererSupport.RECOGNIZED_UNSUPPORTED;
 
-        if (countedDuration && !payloadLengthValid) {
-            MachineAudioSupport.unsupported(
-                    diagnostics,
-                    event,
-                    "AUDIO_RENDERER_8001_LENGTH_INVALID",
-                    "MFiAudio 71:84 embedded byte count exceeds the available payload.");
-        }
         if (format != null && format.codedBits == 2 && operation != 3) {
             MachineAudioSupport.unsupported(
                     diagnostics,
@@ -159,9 +146,9 @@ final class MachineSlotInterpreter {
             } else if (operation != 1) {
                 reason = "only verified 71:84 mode/operation 1 is renderable";
             } else if (rawFlags != 0) {
-                reason = "verified 71:84 requires flags=0";
+                reason = "current renderer coverage requires raw control byte 0";
             } else {
-                reason = "the embedded payload length is invalid";
+                reason = "the profile is not enabled by the renderer";
             }
             MachineAudioSupport.unsupported(
                     diagnostics,

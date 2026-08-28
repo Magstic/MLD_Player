@@ -211,6 +211,7 @@ On-disk contract:
 - packed-code extraction is low-bit-first:
   - `2-bit`: four codes per byte
   - `4-bit`: two codes per byte
+- linear output clamps reconstructed G.726 to `[-8192,8191]`, then expands by `<<2`; predictor state uses the unclamped reconstruction
 - mono decodes one compressed stream and duplicates the exported result to left
   and right
 - stereo splits the blob into two contiguous half-streams, decodes them
@@ -358,13 +359,13 @@ Every `80..EF` command consumes its value byte, including commands with an empty
 
 | Command | Native rule |
 |---|---|
-| `B0` | track `0`, value `< 0x80`; absolute master volume; initial cache `100` |
-| `B1` | track `0`, value `< 0x80`; master balance backend control |
+| `B0` | track `0`, value `< 0x80`; cache raw value; sampled `resourceLevel=floor(baseVolume*value/127)`, default `baseVolume=127` |
+| `B1` | track `0`, value `< 0x80`; sampled `resourcePan=value`; synth balance is separate |
 | `B2..B9` | empty handler |
 | `BA` | track `0`, value `< 0x80`; channel=`(value>>3)&0x0F`, mode=`value&7` |
 | `BB` | empty handler |
 | `BC` | track `0`, value `< 0x80`; relative tempo; clamp `20..255` |
-| `BD` | track `0`, value `< 0x80`; `masterVolume=clamp(0,127,masterVolume+value-0x40)` |
+| `BD` | track `0`, value `< 0x80`; update cached B0 value relatively, clamp `0..127`, then apply the B0 backend |
 | `BE` | track `0`, value `0`; global forced-stop backend path |
 | `BF` | track `0`, any value; session reset |
 | `C0..CF` | track `0`; timing table handler |
@@ -638,6 +639,8 @@ Handlers `0` and `1` consume one packed byte:
 - handler `0` uses layered audio backend slot `+0x38`
 - handler `1` uses layered audio backend slot `+0x3C`
 
+Layered handlers `0` and `1` require `context+0x1C14 < 0x30340000` and `arg4 == 0`.
+
 Handlers `0x104` and `0x105` use the same payload and backend actions. Runtime phase value `1` suppresses these wrappers.
 
 `lib002/lib004` keep the descriptor grammar and produce no audio backend effect for these handler IDs.
@@ -680,7 +683,7 @@ Common body header for handlers `0x109` and `0x106`:
 
 - byte 0: channel high2, slot low6
 - byte 1: operation high2, format low6
-- byte 2 bit0: active-slot control flag
+- byte 2: only bit0 is used; bits7..1 are ignored
 
 Format table:
 
@@ -702,7 +705,7 @@ Operation model:
 
 Handler `0x109` uses every byte after the three-byte header as coded payload. `durationByteCount` equals the coded payload length.
 
-Handler `0x106` reads a BE32 `durationByteCount` after the three-byte header. Coded payload begins after the BE32 field. The verified legacy `71:84` renderer consumes exactly `durationByteCount` bytes; a declared count beyond the available body is not renderable.
+Handler `0x106` reads BE32 `durationByteCount`; coded payload is the entire body remainder after that field. The BE32 value affects duration only.
 
 Native duration:
 
@@ -710,9 +713,9 @@ Native duration:
 - `sampleCount = (durationByteCount * samplesPerByte) mod 2^32`
 - `durationMs = floor(sampleCount * 1000 / sampleRate + 0.5)`
 
-Layered families perform audio backend load/release/start calls. Monolithic families maintain the corresponding slot caches without these audio backend calls.
+Layered `0x106` returns before parsing when `context+0x1C14 >= 0x30340000` or `arg6 == 1`. When operation `1` reaches MFiAudio start, `startLevel=127` and the voice limit is `min(decodedFrames,durationMs*32)` at 32 kHz; the decoded cache remains complete. Monolithic families keep slot state without layered audio calls.
 
-The machine-dependent production profile is descriptor index `23` (`71 84`) with operation `1`, flags byte `0`, mono, a structurally valid counted payload, and 4-bit format `5`, `13`, or `21`. Other recognized machine-dependent `0x8001` forms retain explicit unsupported renderer status. The ordinary active-`adat` production profile is defined under selector `0x81`.
+Current renderer coverage is descriptor `23` (`71 84`), operation `1`, raw control byte `0`, mono 4-bit format `5/13/21`. Raw-byte-zero is a fail-closed project boundary, not a `lib003` rule. Other machine `0x8001` forms remain unsupported until enabled separately. The ordinary active-`adat` profile is selector `0x81`.
 
 ### Compact `0x8002` Load State
 

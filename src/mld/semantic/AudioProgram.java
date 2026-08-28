@@ -15,7 +15,9 @@ public final class AudioProgram {
     public final List<SlotState> slotStates;
     public final List<ConfigBinding> configBindings;
     public final RouteState routeState;
-    public final int globalLevel;
+    public final int resourceLevel;
+    public final int resourcePan;
+    public final int globalSampledLevel;
     public final List<Diagnostic> diagnostics;
 
     AudioProgram(
@@ -27,7 +29,9 @@ public final class AudioProgram {
             List<SlotState> slotStates,
             List<ConfigBinding> configBindings,
             RouteState routeState,
-            int globalLevel,
+            int resourceLevel,
+            int resourcePan,
+            int globalSampledLevel,
             List<Diagnostic> diagnostics) {
         this.resourceCatalog = immutable(resourceCatalog);
         this.initialChannelConfigs = immutable(initialChannelConfigs);
@@ -37,7 +41,9 @@ public final class AudioProgram {
         this.slotStates = immutable(slotStates);
         this.configBindings = immutable(configBindings);
         this.routeState = routeState;
-        this.globalLevel = globalLevel;
+        this.resourceLevel = resourceLevel;
+        this.resourcePan = resourcePan;
+        this.globalSampledLevel = globalSampledLevel;
         this.diagnostics = immutable(diagnostics);
     }
 
@@ -65,7 +71,8 @@ public final class AudioProgram {
         SLOT_STOP,
         SLOT_CONTROL,
         ROUTE_UPDATE,
-        GLOBAL_LEVEL,
+        RESOURCE_LEVEL,
+        RESOURCE_PAN,
         NO_ACTION
     }
 
@@ -196,6 +203,9 @@ public final class AudioProgram {
             return Arrays.copyOf(encodedPayload, encodedPayload.length);
         }
 
+        public int encodedPayloadLength() {
+            return encodedPayload.length;
+        }
     }
 
     /** Final native audio channel state after the linear semantic pass. */

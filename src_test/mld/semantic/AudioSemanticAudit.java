@@ -19,8 +19,8 @@ public final class AudioSemanticAudit {
     public static void main(String[] args) {
         auditIntegratedResourceAndMachineState();
         auditConditionalFinalStateProvenance();
-        auditGlobalLevelDefaults();
-        auditGlobalLevelReset();
+        auditSampledResourceDefaults();
+        auditSampledResourceControls();
         auditUnsupportedRendererDiagnostics();
         auditStrictVerifiedRendererProfile();
         System.out.println("AudioSemanticAudit: PASS");
@@ -116,8 +116,10 @@ public final class AudioSemanticAudit {
         eq("route class lane2", 1, routeClasses[2]);
         eq("route class lane3", 2, routeClasses[3]);
 
-        eq("global B0 level", 90, audio.globalLevel);
-        containsAction(audio, AudioProgram.SourceKind.SYSTEM, AudioProgram.ActionKind.GLOBAL_LEVEL);
+        eq("B0 sampled resource level", 90, audio.resourceLevel);
+        eq("sampled resource pan default", 64, audio.resourcePan);
+        eq("sampled global level remains independent", 64, audio.globalSampledLevel);
+        containsAction(audio, AudioProgram.SourceKind.SYSTEM, AudioProgram.ActionKind.RESOURCE_LEVEL);
     }
 
     private static void auditConditionalFinalStateProvenance() {
@@ -130,21 +132,34 @@ public final class AudioSemanticAudit {
         isFalse("unconditional resource pan clears phase provenance", state.panPhaseGated);
     }
 
-    private static void auditGlobalLevelDefaults() {
+    private static void auditSampledResourceDefaults() {
         NativeProgram program = compile(
                 emptyDocument(), Collections.<TrackEvent>emptyList(), 0);
-        eq("sampled-audio initial global level", 64, program.audio.globalLevel);
+        eq("sampled resource default level", 127, program.audio.resourceLevel);
+        eq("sampled resource default pan", 64, program.audio.resourcePan);
+        eq("sampled global default level", 64, program.audio.globalSampledLevel);
     }
 
-    private static void auditGlobalLevelReset() {
+    private static void auditSampledResourceControls() {
         List<TrackEvent> events = new ArrayList<TrackEvent>();
-        events.add(system(0, 0, 0xB0, 37));
-        events.add(system(1, 1, 0xBF, 0));
-        NativeProgram program = compile(emptyDocument(), events, 1);
-        eq("BF restores native audio global level", 100, program.audio.globalLevel);
-        AudioProgram.AudioAction last = program.audio.actions.get(program.audio.actions.size() - 1);
-        same("BF audio action kind", AudioProgram.ActionKind.GLOBAL_LEVEL, last.kind);
-        eq("BF audio action value", 100, last.value);
+        events.add(system(0, 0, 0xB0, 90));
+        events.add(system(1, 1, 0xB1, 23));
+        events.add(system(2, 2, 0xBD, 0x20));
+        NativeProgram program = compile(emptyDocument(), events, 2);
+        eq("BD updates B0-backed resource level", 58, program.audio.resourceLevel);
+        eq("B1 updates resource pan", 23, program.audio.resourcePan);
+        eq("B0/B1 do not replace sampled global level", 64, program.audio.globalSampledLevel);
+        same("B0 action kind", AudioProgram.ActionKind.RESOURCE_LEVEL, program.audio.actions.get(0).kind);
+        same("B1 action kind", AudioProgram.ActionKind.RESOURCE_PAN, program.audio.actions.get(1).kind);
+        same("BD action kind", AudioProgram.ActionKind.RESOURCE_LEVEL, program.audio.actions.get(2).kind);
+
+        List<TrackEvent> reset = new ArrayList<TrackEvent>();
+        reset.add(system(0, 0, 0xB0, 37));
+        reset.add(system(1, 1, 0xBF, 0xFF));
+        reset.add(system(2, 2, 0xBD, 0x40));
+        NativeProgram resetProgram = compile(emptyDocument(), reset, 2);
+        eq("BF restores B0 cache before relative BD", 100, resetProgram.audio.resourceLevel);
+        eq("BF does not invent sampled-global action", 2, resetProgram.audio.actions.size());
     }
 
     private static void auditUnsupportedRendererDiagnostics() {
@@ -220,10 +235,11 @@ public final class AudioSemanticAudit {
                 AudioProgram.RendererSupport.VERIFIED_8001_4BIT,
                 counted.rendererSupport);
         eq("format13 sample rate", 16000, counted.sampleRate);
-        eqBytes("counted 71:84 uses declared embedded length",
-                new byte[] {0x12}, counted.copyEncodedPayload());
+        eq("counted 71:84 duration count", 1, counted.durationByteCount);
+        eqBytes("counted 71:84 loads the full body remainder",
+                new byte[] {0x12, 0x34, 0x56}, counted.copyEncodedPayload());
 
-        NativeProgram invalidLengthProgram = compile(
+        NativeProgram mismatchedCountProgram = compile(
                 emptyDocument(),
                 Collections.<TrackEvent>singletonList(md(0, 0,
                         0x71, 0x84,
@@ -231,10 +247,26 @@ public final class AudioSemanticAudit {
                         0x00, 0x00, 0x00, 0x03,
                         0x12)),
                 0);
-        same("overrun count is not renderer-ready",
+        AudioProgram.AudioAction mismatched = mismatchedCountProgram.audio.actions.get(0);
+        same("duration count larger than payload remains renderer-ready",
+                AudioProgram.RendererSupport.VERIFIED_8001_4BIT, mismatched.rendererSupport);
+        eq("mismatched duration count retained", 3, mismatched.durationByteCount);
+        eqBytes("mismatched load still uses available body remainder",
+                new byte[] {0x12}, mismatched.copyEncodedPayload());
+
+        NativeProgram ignoredUpperBitsProgram = compile(
+                emptyDocument(),
+                Collections.<TrackEvent>singletonList(md(0, 0,
+                        0x71, 0x84,
+                        0x00, 0x45, 0x80,
+                        0x00, 0x00, 0x00, 0x01,
+                        0x12)),
+                0);
+        AudioProgram.AudioAction ignoredUpperBits = ignoredUpperBitsProgram.audio.actions.get(0);
+        eq("native control bit0 ignores upper bits", 0, ignoredUpperBits.controlFlag);
+        same("raw-byte-zero renderer boundary remains fail-closed",
                 AudioProgram.RendererSupport.RECOGNIZED_UNSUPPORTED,
-                invalidLengthProgram.audio.actions.get(0).rendererSupport);
-        containsDiagnostic(invalidLengthProgram.audio, "AUDIO_RENDERER_8001_LENGTH_INVALID");
+                ignoredUpperBits.rendererSupport);
     }
 
     private static NativeProgram compile(MldDocument document, List<TrackEvent> events, int totalRawTicks) {
