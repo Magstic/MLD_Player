@@ -675,6 +675,14 @@ Handler `3` body adds one control byte after byte 1:
 - operation `2`: enter the start gate with the existing slot
 - operation `3`: ignore
 
+The operation table above applies only to handler `3`'s non-pending path. Handler `3` shares its per-slot pending/channel/format/operation cache with `0x109/0x106/0x400`:
+
+- pending + bit0 `0`: restore cached operation/format/channel and clear pending
+- pending + bit0 `1`: force operation `0`, restore cached format/channel, and retain pending
+- no pending + bit0 `1` + incoming operation other than `2`: cache operation/format/channel, set pending, release the old slot, and execute operation `0`; incoming operation `3` therefore loads
+
+Pending operation `0/1` loads without release: the same MFiAudio type appends, while a different type is rejected without mutation. Ordinary operation `0/1` releases before format validation, so an invalid format leaves the slot empty.
+
 Both handlers maintain slot state in the native player. Layered families also perform audio backend load/release/start calls. Monolithic families retain the internal slot-state mutations.
 
 ### `0x8001` Slot Handlers
@@ -713,7 +721,7 @@ Native duration:
 - `sampleCount = (durationByteCount * samplesPerByte) mod 2^32`
 - `durationMs = floor(sampleCount * 1000 / sampleRate + 0.5)`
 
-Layered `0x106` returns before parsing when `context+0x1C14 >= 0x30340000` or `arg6 == 1`. When operation `1` reaches MFiAudio start, `startLevel=127` and the voice limit is `min(decodedFrames,durationMs*32)` at 32 kHz; the decoded cache remains complete. Monolithic families keep slot state without layered audio calls.
+Layered `0x109` and `0x106` both return before parsing when `context+0x1C14 >= 0x30340000` or `arg6 == 1`. When operation `1` reaches MFiAudio start, `startLevel=127` and the voice limit is `min(decodedFrames,durationMs*32)` at 32 kHz; the decoded cache remains complete. Monolithic families keep slot state without layered audio calls.
 
 Current renderer coverage is descriptor `23` (`71 84`), operation `1`, raw control byte `0`, mono 4-bit format `5/13/21`. Raw-byte-zero is a fail-closed project boundary, not a `lib003` rule. Other machine `0x8001` forms remain unsupported until enabled separately. The ordinary active-`adat` profile is selector `0x81`.
 
@@ -723,37 +731,45 @@ Current renderer coverage is descriptor `23` (`71 84`), operation `1`, raw contr
 
 Body:
 
-- byte 0: slot
-- byte 1 low2: compact format field
-- byte 1 bit7: channel-count selector; `0` = 1 channel, `1` = 2 channels
-- bytes 2..3: BE16 sample rate
-- coded bits: `4`
-- remaining bytes: coded payload
+- byte 0: raw slot byte; the plugin caches all `0..255`, but layered MFiAudio `release/load` accepts only `0..63`, so `64..255` cannot become loaded sampled-audio slots
+- byte 1 low2: persisted compact slot-state field; it is not passed to the `0x8002` codec format setter
+- byte 1 bit7: channel-count selector; `0` = mono, `1` = stereo
+- bytes 2..3: BE16 source sample rate
+- remaining bytes: 4-bit AWC2 payload
 
-Native duration:
+The renderer supports only native-length-valid 4-bit AWC2 at `4000/8000/16000/32000 Hz`, mono or stereo. Native `awc2` requires at least 81 payload bytes for mono and 162 for stereo. Other source rates fail closed by project policy, not by native format validation.
 
-- `sampleCount = (2 * codedPayloadLength) mod 2^32`
-- `durationMs = floor(sampleCount * 1000 / sampleRate + 0.5)`
+Native duration is `round((2*codedPayloadLength)*1000/sampleRate)`, independent of channel count. In stereo, each coded byte maps its low nibble to channel 0 and high nibble to channel 1, with independent codec state. For `N` coded bytes, AWC2 fills the first `N` frames of MFiAudio's zero-initialized `2N`-frame source timeline; the second half remains zero. MFiAudio converts that PCM to its fixed 32-kHz cache with the native 8-tap polyphase FIR.
 
-Layered families issue the audio load/release path. Monolithic families retain the internal state update.
+Within one playback program, the slot alone identifies an exposed resource. The layered backend's plugin-instance `resourceIndex` is not derived from the MLD source track. Reload stops voices on the slot, releases its old cache, and loads the replacement.
+
+#### Shared Pending State
+
+`0x400` sets the pending state shared by cached `0x003`, inline `0x109`, and counted `0x106`. It caches channel `0`, low2 format `0..3`, and duration, but preserves the cached operation. That operation starts at `0` and may hold `0/1/3` from an earlier non-pending, bit0-one handler call; this branch never caches `2`.
+
+Pending execution never releases the existing slot first:
+
+- `0x109/0x106` reuse cached channel/duration. Effective operation `0/1` tries to load `0x8001` over the existing `0x8002` slot and receives MFiAudio type-mismatch `-14`; cached operation `3` is a no-op.
+- `0x003` reuses cached format/channel. Because `0x400` caches format `0..3` and handler `3` accepts only `4/5/6`, format validation preserves the `0x8002` slot.
+
+Bit0 `0` restores the cached operation and clears pending before execution; after a validation return, the next call therefore follows the ordinary path. Bit0 `1` forces operation `0` and retains pending.
+
+Without pending state, `0x109/0x106` with bit0 `1` and incoming operation other than `2` cache operation/format/channel/duration, set pending, release the old slot, and execute operation `0`. Incoming operation `3` therefore loads. A later pending operation `0/1` loads without release: MFiAudio appends to an existing `0x8001` slot, but rejects a different type without mutation and leaves its decoded cache allocated.
 
 ### Compact Slot Control
 
-`11 01 F1` uses handler `0x401`.
+`11 01 F1` uses handler `0x401`. The first body byte supplies the native logical channel directly from high2 and opcode from low4; MLD track index is not added to the channel.
 
-First body byte:
+- `3/4`: low5 slot + low7 level; start the cached slot with its cached duration, independent of whether the current cache is verified `0x8002` or a later verified `0x8001` replacement
+- `5`: low5 slot; stop the matching channel+slot voice without unloading the slot
+- `6`: skip one byte, then pan; `0..63 -> 2*value`, `0x80/0xFF -> 64`; other raw values are no-op
+- `7`: separate backend control and remains outside sampled rendering
 
-- channel = high2
-- opcode = low4
+`31 10` handler `0x402` is a second entry to the same backend: code `7` delegates to `0x400` load, `9/15` start, `10` stop, and `11` pan with the same channel/slot/value rules. Code `12` remains outside the verified sampled renderer.
 
-Opcodes:
+Each MFiAudio backend instance has 16 active-voice entries. Start uses the first inactive entry or, when full, steals the oldest voice (the smallest start serial) at the new start time. Repeated starts of the same channel/slot remain separate voices until stopped, released, completed, or stolen.
 
-- `3/4`: low5 slot + low7 value; layered audio start path uses cached slot duration
-- `5`: low5 slot; layered backend slot `+0x34`
-- `6`: one reserved byte + one value byte; `0..63` maps to `2*value`, `0x80/0xFF` maps to `0x40`, layered backend slot `+0x3C`
-- `7`: one value byte; layered synth/backend object slot `+0x48`
-
-Runtime phase value `1` suppresses the handler. `lib002/lib004` parse this structure and produce no runtime backend side effect.
+Layered `0x109/0x106/0x400/0x401/0x402` execution is suppressed in runtime phase `1`; the semantic actions retain this phase gate.
 
 ### 16-Lane Route State
 
@@ -769,7 +785,7 @@ For lane `i`:
 - class A `0/2` retains the route flag
 - class B is stored in the per-lane route class table
 
-Layered families can additionally invoke backend slot `+0x44` under the native route gate. Monolithic families retain the route-state writes.
+Layered runtime phase `1` returns before parsing or route-state writes. Otherwise layered families can invoke backend slot `+0x44` under the native route gate; monolithic families retain the route-state writes.
 
 ### Mixed `31 10` Dispatcher
 

@@ -31,6 +31,9 @@ final class MachineSlotInterpreter {
         int controlFlag = cached ? MachineAudioSupport.u8(payload, match.bodyOffset + 2) & 0x01 : -1;
         byte[] encoded = MachineAudioSupport.slice(
                 payload, match.bodyOffset + headerSize, payload.length);
+        boolean mayExecute = operation != 3 || (cached && controlFlag == 1);
+        boolean mayLoad = operation == 0 || operation == 1
+                || (cached && controlFlag == 1 && operation != 2);
         if (sampleRate < 0 && operation != 2 && operation != 3) {
             MachineAudioSupport.unsupported(
                     diagnostics,
@@ -39,7 +42,7 @@ final class MachineSlotInterpreter {
                     "Recognized 0x8000 format code " + formatCode
                             + " has no verified sample-rate mapping.");
         }
-        if (operation != 3) {
+        if (mayExecute) {
             MachineAudioSupport.unsupported(
                     diagnostics,
                     event,
@@ -47,7 +50,7 @@ final class MachineSlotInterpreter {
                     "MFiAudio type 0x8000 semantics are recognized; renderer support is not implemented.");
         }
         AudioProgram.ActionKind actionKind = operationKind(match.handlerId, operation);
-        if (actionKind != AudioProgram.ActionKind.SLOT_LOAD
+        if (!cached && actionKind != AudioProgram.ActionKind.SLOT_LOAD
                 && actionKind != AudioProgram.ActionKind.SLOT_LOAD_AND_START) {
             encoded = new byte[0];
         }
@@ -57,7 +60,7 @@ final class MachineSlotInterpreter {
                 event,
                 match,
                 actionKind,
-                event.trackIndex * 4 + localChannel,
+                localChannel,
                 channelSlot & 0x3F,
                 -1,
                 -1,
@@ -75,8 +78,10 @@ final class MachineSlotInterpreter {
                 false,
                 localChannel <= 1,
                 AudioProgram.RendererSupport.RECOGNIZED_UNSUPPORTED,
-                operation == 3 ? AudioProgram.BranchEffect.NO_ACTION : AudioProgram.BranchEffect.BACKEND_ACTION,
-                operation == 0 || operation == 1
+                mayExecute
+                        ? AudioProgram.BranchEffect.BACKEND_ACTION
+                        : AudioProgram.BranchEffect.NO_ACTION,
+                mayLoad
                         ? AudioProgram.BranchEffect.STATE_ONLY
                         : AudioProgram.BranchEffect.NO_ACTION,
                 encoded);
@@ -133,13 +138,16 @@ final class MachineSlotInterpreter {
                 ? AudioProgram.RendererSupport.VERIFIED_8001_4BIT
                 : AudioProgram.RendererSupport.RECOGNIZED_UNSUPPORTED;
 
-        if (format != null && format.codedBits == 2 && operation != 3) {
+        boolean mayExecute = operation != 3 || controlFlag == 1;
+        boolean mayLoad = operation == 0 || operation == 1
+                || (controlFlag == 1 && operation != 2);
+        if (format != null && format.codedBits == 2 && mayExecute) {
             MachineAudioSupport.unsupported(
                     diagnostics,
                     event,
                     "AUDIO_RENDERER_8001_2BIT_UNSUPPORTED",
                     "MFiAudio type 0x8001 2-bit G.726 is recognized; decoder support is not implemented.");
-        } else if (format != null && format.codedBits == 4 && operation != 3 && !verifiedLegacyPath) {
+        } else if (format != null && format.codedBits == 4 && mayExecute && !verifiedLegacyPath) {
             String reason;
             if (match.descriptorIndex != 23 || !countedDuration) {
                 reason = "only the verified legacy 71:84 descriptor is renderable";
@@ -158,17 +166,15 @@ final class MachineSlotInterpreter {
                             + reason + ".");
         }
         AudioProgram.ActionKind actionKind = operationKind(match.handlerId, operation);
-        if (actionKind != AudioProgram.ActionKind.SLOT_LOAD
-                && actionKind != AudioProgram.ActionKind.SLOT_LOAD_AND_START) {
-            encoded = new byte[0];
-        }
+        // Keep the body remainder for every cached 0x8001 operation. Pending state or
+        // control bit0 can replace the incoming operation with a load at execution time.
         int localChannel = (channelSlot >> 6) & 0x03;
         return MachineAudioSupport.action(
                 order,
                 event,
                 match,
                 actionKind,
-                event.trackIndex * 4 + localChannel,
+                localChannel,
                 channelSlot & 0x3F,
                 -1,
                 -1,
@@ -183,11 +189,13 @@ final class MachineSlotInterpreter {
                 durationMs,
                 -1,
                 true,
-                false,
-                localChannel <= 1,
+                true,
+                localChannel <= 3,
                 support,
-                operation == 3 ? AudioProgram.BranchEffect.NO_ACTION : AudioProgram.BranchEffect.BACKEND_ACTION,
-                operation == 0 || operation == 1
+                mayExecute
+                        ? AudioProgram.BranchEffect.PHASE_GATED_BACKEND
+                        : AudioProgram.BranchEffect.NO_ACTION,
+                mayLoad
                         ? AudioProgram.BranchEffect.STATE_ONLY
                         : AudioProgram.BranchEffect.NO_ACTION,
                 encoded);
@@ -214,11 +222,20 @@ final class MachineSlotInterpreter {
             long sampleCount = (((long) encoded.length) * 2L) & 0xFFFFFFFFL;
             durationMs = Math.round((sampleCount * 1000.0) / sampleRate);
         }
-        MachineAudioSupport.unsupported(
-                diagnostics,
-                event,
-                "AUDIO_RENDERER_8002_UNSUPPORTED",
-                "MFiAudio type 0x8002 semantics are recognized; renderer support is not implemented.");
+        boolean verifiedRendererProfile = slot < 64
+                && encoded.length >= 81 * channelCount
+                && (sampleRate == 4000 || sampleRate == 8000
+                        || sampleRate == 16000 || sampleRate == 32000);
+        AudioProgram.RendererSupport support = verifiedRendererProfile
+                ? AudioProgram.RendererSupport.VERIFIED_8002_AWC2_4BIT
+                : AudioProgram.RendererSupport.RECOGNIZED_UNSUPPORTED;
+        if (!verifiedRendererProfile) {
+            MachineAudioSupport.unsupported(
+                    diagnostics,
+                    event,
+                    "AUDIO_RENDERER_8002_PROFILE_UNSUPPORTED",
+                    "Recognized 0x8002 audio is outside the verified native-length slot-0..63, 4/8/16/32-kHz mono/stereo AWC2 renderer profiles.");
+        }
         return MachineAudioSupport.action(
                 order,
                 event,
@@ -239,10 +256,10 @@ final class MachineSlotInterpreter {
                 durationMs,
                 -1,
                 true,
-                false,
                 true,
-                AudioProgram.RendererSupport.RECOGNIZED_UNSUPPORTED,
-                AudioProgram.BranchEffect.BACKEND_ACTION,
+                true,
+                support,
+                AudioProgram.BranchEffect.PHASE_GATED_BACKEND,
                 AudioProgram.BranchEffect.STATE_ONLY,
                 encoded);
     }

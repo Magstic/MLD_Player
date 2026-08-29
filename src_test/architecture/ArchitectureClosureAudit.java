@@ -134,7 +134,8 @@ public final class ArchitectureClosureAudit {
         assertExclusiveToken(
                 sourceRoot, sources,
                 "new DecodedSampledResource(",
-                "audio/Mfi8001Decoder.java");
+                "audio/Mfi8001Decoder.java",
+                "audio/Mfi8002Decoder.java");
         String renderer = read(sourceRoot.resolve("audio/AudioRenderer.java"));
         if (renderer.contains("MldDocument") || renderer.contains("rawBytes")) {
             fail("AudioRenderer must consume semantic sampled resources, not raw MLD container bytes");
@@ -240,11 +241,17 @@ public final class ArchitectureClosureAudit {
             Path sourceRoot,
             List<Path> sources,
             String token,
-            String ownerRelative) throws IOException {
-        Path owner = sourceRoot.resolve(ownerRelative).normalize();
+            String... ownerRelatives) throws IOException {
         for (Path source : sources) {
-            if (!source.normalize().equals(owner) && read(source).contains(token)) {
-                fail(token + " escaped owner " + ownerRelative + " into " + unix(source));
+            boolean owner = false;
+            for (String ownerRelative : ownerRelatives) {
+                if (source.normalize().equals(sourceRoot.resolve(ownerRelative).normalize())) {
+                    owner = true;
+                    break;
+                }
+            }
+            if (!owner && read(source).contains(token)) {
+                fail(token + " escaped native decoder ownership into " + unix(source));
             }
         }
     }

@@ -36,6 +36,8 @@ final class AudioSemanticState {
             new LinkedHashMap<Integer, MutableChannelState>();
     private final Map<Integer, MutableSlotState> slots =
             new LinkedHashMap<Integer, MutableSlotState>();
+    private final Map<Integer, SharedSlotCache> sharedSlotCaches =
+            new LinkedHashMap<Integer, SharedSlotCache>();
     private final Map<String, MutableConfigBinding> configs =
             new LinkedHashMap<String, MutableConfigBinding>();
     private final int[] routeFlags = filled(16, -1);
@@ -350,6 +352,7 @@ final class AudioSemanticState {
     }
 
     private void apply(AudioProgram.AudioAction action) {
+        if (applySharedCachedSlotState(action)) return;
         if (action.kind == AudioProgram.ActionKind.CHANNEL_LEVEL && action.logicalChannel >= 0) {
             MutableChannelState state = channel(action.logicalChannel);
             state.levelKnown = true;
@@ -425,7 +428,210 @@ final class AudioSemanticState {
         if (action.slot < 0 || action.kind == AudioProgram.ActionKind.NO_ACTION) {
             return;
         }
-        slots.put(Integer.valueOf(action.slot), new MutableSlotState(action));
+        Integer slot = Integer.valueOf(action.slot);
+        if (isCompact8002Load(action)) {
+            SharedSlotCache cache = sharedSlotCache(slot);
+            cache.pending = true;
+            cache.formatCode = action.formatCode;
+            cache.logicalChannel = 0;
+            cache.durationMs = action.durationMs;
+            // Handler 0x400 keeps the raw byte as its plugin-cache index, but both
+            // MFiAudio release/load entry points reject backend slots outside 0..63.
+            if (action.slot < 64) {
+                slots.put(slot, new MutableSlotState(action));
+            }
+            return;
+        }
+        slots.put(slot, new MutableSlotState(action));
+    }
+
+    private static boolean isCompact8002Load(AudioProgram.AudioAction action) {
+        return action.kind == AudioProgram.ActionKind.SLOT_LOAD
+                && action.audioType == AudioProgram.AudioType.MFI_8002;
+    }
+
+    private boolean applySharedCachedSlotState(AudioProgram.AudioAction action) {
+        if (isCached8000Handler(action)) {
+            applyCached8000State(action);
+            return true;
+        }
+        return applyCached8001State(action);
+    }
+
+    private void applyCached8000State(AudioProgram.AudioAction action) {
+        Integer slot = Integer.valueOf(action.slot);
+        SharedSlotCache cache = sharedSlotCache(slot);
+        if (cache.pending) {
+            int effectiveOperation = action.controlFlag == 0 ? cache.operation : 0;
+            if (action.controlFlag == 0) cache.pending = false;
+            if (effectiveOperation == 2) return;
+
+            int effectiveSampleRate = cached8000Rate(cache.formatCode);
+            if (effectiveSampleRate <= 0 || effectiveOperation == 3) return;
+            if (effectiveOperation == 0 || effectiveOperation == 1) {
+                append8000WithoutRelease(
+                        slot,
+                        resolved8000Load(
+                                action,
+                                effectiveOperation,
+                                cache.formatCode,
+                                effectiveSampleRate,
+                                cache.logicalChannel));
+            }
+            return;
+        }
+
+        if (action.controlFlag == 1 && action.operation != 2) {
+            cache.operation = action.operation;
+            cache.formatCode = action.formatCode;
+            cache.logicalChannel = action.logicalChannel;
+            cache.pending = true;
+            // Cached 0x003 releases before format dispatch, then forces operation 0.
+            slots.remove(slot);
+            if (action.sampleRate > 0) {
+                slots.put(slot, new MutableSlotState(
+                        resolved8000Load(
+                                action,
+                                0,
+                                action.formatCode,
+                                action.sampleRate,
+                                action.logicalChannel)));
+            }
+            return;
+        }
+
+        if (action.operation == 0 || action.operation == 1) {
+            // The native wrapper releases before validating the cached 0x8000 format.
+            slots.remove(slot);
+            if (action.sampleRate > 0) {
+                slots.put(slot, new MutableSlotState(action));
+            }
+        }
+    }
+
+    private boolean applyCached8001State(AudioProgram.AudioAction action) {
+        if (!isCached8001Handler(action)) return false;
+        if (action.sampleRate <= 0 || action.codedBits <= 0 || action.channelCount != 1) {
+            // Both native handlers return during format dispatch without touching cache state.
+            return true;
+        }
+        Integer slot = Integer.valueOf(action.slot);
+        SharedSlotCache cache = sharedSlotCache(slot);
+        if (cache.pending) {
+            int effectiveOperation = action.controlFlag == 0
+                    ? cache.operation : 0;
+            if (action.controlFlag == 0) cache.pending = false;
+            if (effectiveOperation == 0 || effectiveOperation == 1) {
+                append8001WithoutRelease(slot, action);
+            }
+            return true;
+        }
+        if (action.controlFlag == 1 && action.operation != 2) {
+            cache.operation = action.operation;
+            cache.formatCode = action.formatCode;
+            cache.logicalChannel = action.logicalChannel;
+            cache.durationMs = action.durationMs;
+            cache.pending = true;
+            // This branch forces operation 0, releases the previous slot, and loads 0x8001.
+            slots.put(slot, new MutableSlotState(action));
+            return true;
+        }
+        if (action.operation == 0 || action.operation == 1) {
+            slots.put(slot, new MutableSlotState(action));
+        }
+        return true;
+    }
+
+    private static boolean isCached8001Handler(AudioProgram.AudioAction action) {
+        return action.sourceKind == AudioProgram.SourceKind.MACHINE_DEPENDENT
+                && (action.handlerId == 0x109 || action.handlerId == 0x106)
+                && action.audioType == AudioProgram.AudioType.MFI_8001
+                && action.slot >= 0 && action.slot < 64;
+    }
+
+    private static boolean isCached8000Handler(AudioProgram.AudioAction action) {
+        return action.sourceKind == AudioProgram.SourceKind.MACHINE_DEPENDENT
+                && action.handlerId == 0x003
+                && action.audioType == AudioProgram.AudioType.MFI_8000
+                && action.slot >= 0 && action.slot < 64;
+    }
+
+    private SharedSlotCache sharedSlotCache(Integer slot) {
+        SharedSlotCache cache = sharedSlotCaches.get(slot);
+        if (cache == null) {
+            cache = new SharedSlotCache();
+            sharedSlotCaches.put(slot, cache);
+        }
+        return cache;
+    }
+
+    private static int cached8000Rate(int formatCode) {
+        if (formatCode == 4) return 4000;
+        if (formatCode == 5) return 8000;
+        if (formatCode == 6) return 16000;
+        return -1;
+    }
+
+    private static AudioProgram.AudioAction resolved8000Load(
+            AudioProgram.AudioAction action,
+            int operation,
+            int formatCode,
+            int sampleRate,
+            int logicalChannel) {
+        return new AudioProgram.AudioAction(
+                action.order,
+                action.sourceKind,
+                operation == 1
+                        ? AudioProgram.ActionKind.SLOT_LOAD_AND_START
+                        : AudioProgram.ActionKind.SLOT_LOAD,
+                action.sourceTrack,
+                action.eventIndex,
+                action.rawTick,
+                action.descriptorIndex,
+                action.handlerId,
+                logicalChannel,
+                action.slot,
+                action.resourceIndex,
+                action.linkedCatalogIndex,
+                action.audioType,
+                operation,
+                formatCode,
+                sampleRate,
+                action.codedBits,
+                action.channelCount,
+                action.controlFlag,
+                action.durationByteCount,
+                action.durationMs,
+                action.value,
+                action.cacheAware,
+                action.phaseGated,
+                logicalChannel <= 1,
+                action.rendererSupport,
+                action.layeredEffect,
+                action.monolithicEffect,
+                action.copyEncodedPayload());
+    }
+
+    private void append8001WithoutRelease(
+            Integer slot, AudioProgram.AudioAction action) {
+        MutableSlotState current = slots.get(slot);
+        if (current == null) {
+            slots.put(slot, new MutableSlotState(action));
+        } else if (current.action.audioType == AudioProgram.AudioType.MFI_8001) {
+            current.append(action);
+        }
+        // A current non-0x8001 slot takes MFiAudio's type-mismatch return unchanged.
+    }
+
+    private void append8000WithoutRelease(
+            Integer slot, AudioProgram.AudioAction action) {
+        MutableSlotState current = slots.get(slot);
+        if (current == null) {
+            slots.put(slot, new MutableSlotState(action));
+        } else if (current.action.audioType == AudioProgram.AudioType.MFI_8000) {
+            current.append(action);
+        }
+        // A current non-0x8000 slot takes MFiAudio's type-mismatch return unchanged.
     }
 
     private void applyRoute(byte[] payload) {
@@ -488,10 +694,21 @@ final class AudioSemanticState {
     }
 
     private static final class MutableSlotState {
-        final AudioProgram.AudioAction action;
+        AudioProgram.AudioAction action;
+        byte[] encodedPayload;
 
         MutableSlotState(AudioProgram.AudioAction action) {
             this.action = action;
+            this.encodedPayload = action.copyEncodedPayload();
+        }
+
+        void append(AudioProgram.AudioAction appended) {
+            byte[] suffix = appended.copyEncodedPayload();
+            byte[] combined = new byte[encodedPayload.length + suffix.length];
+            System.arraycopy(encodedPayload, 0, combined, 0, encodedPayload.length);
+            System.arraycopy(suffix, 0, combined, encodedPayload.length, suffix.length);
+            action = appended;
+            encodedPayload = combined;
         }
 
         AudioProgram.SlotState snapshot() {
@@ -509,8 +726,16 @@ final class AudioSemanticState {
                     action.durationMs,
                     action.sourceTrack,
                     action.rawTick,
-                    action.copyEncodedPayload());
+                    encodedPayload);
         }
+    }
+
+    private static final class SharedSlotCache {
+        boolean pending;
+        int operation;
+        int formatCode;
+        int logicalChannel;
+        long durationMs;
     }
 
     private static final class MutableConfigBinding {

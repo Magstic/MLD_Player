@@ -23,7 +23,7 @@ final class MachineControlInterpreter {
             return null;
         }
         int packed = MachineAudioSupport.u8(payload, match.bodyOffset);
-        int logicalChannel = event.trackIndex * 4 + ((packed >> 6) & 0x03);
+        int logicalChannel = (packed >> 6) & 0x03;
         return MachineAudioSupport.action(
                 order,
                 event,
@@ -65,7 +65,7 @@ final class MachineControlInterpreter {
             return null;
         }
         int command = MachineAudioSupport.u8(payload, offset);
-        int logicalChannel = event.trackIndex * 4 + ((command >> 6) & 0x03);
+        int logicalChannel = (command >> 6) & 0x03;
         int opcode = command & 0x0F;
         AudioProgram.ActionKind kind = AudioProgram.ActionKind.NO_ACTION;
         int slot = -1;
@@ -78,8 +78,9 @@ final class MachineControlInterpreter {
             kind = AudioProgram.ActionKind.SLOT_STOP;
             slot = MachineAudioSupport.u8(payload, offset + 1) & 0x1F;
         } else if (opcode == 6 && MachineAudioSupport.has(payload, offset + 1, 2)) {
-            kind = AudioProgram.ActionKind.CHANNEL_PAN;
             value = doubledValue(MachineAudioSupport.u8(payload, offset + 2));
+            if (value < 0) return null;
+            kind = AudioProgram.ActionKind.CHANNEL_PAN;
         } else if (opcode == 7 && MachineAudioSupport.has(payload, offset + 1, 1)) {
             kind = AudioProgram.ActionKind.SLOT_CONTROL;
             value = MachineAudioSupport.u8(payload, offset + 1);
@@ -111,7 +112,7 @@ final class MachineControlInterpreter {
         if (code == 8) {
             return route(event, match, order, payload, offset + 1, diagnostics);
         }
-        int logicalChannel = event.trackIndex * 4 + ((command >> 6) & 0x03);
+        int logicalChannel = (command >> 6) & 0x03;
         if (code == 9 || code == 15) {
             if (!MachineAudioSupport.has(payload, offset + 1, 2)) {
                 MachineAudioSupport.truncated(event, match, diagnostics, "mixed audio-start operands");
@@ -136,9 +137,11 @@ final class MachineControlInterpreter {
                 MachineAudioSupport.truncated(event, match, diagnostics, "mixed pan-control operands");
                 return null;
             }
+            int value = doubledValue(MachineAudioSupport.u8(payload, offset + 2));
+            if (value < 0) return null;
             return controlAction(
                     event, match, order, AudioProgram.ActionKind.CHANNEL_PAN, logicalChannel,
-                    -1, code, doubledValue(MachineAudioSupport.u8(payload, offset + 2)), true);
+                    -1, code, value, true);
         }
         if (code == 12) {
             if (!MachineAudioSupport.has(payload, offset + 1, 1)) {
@@ -223,10 +226,10 @@ final class MachineControlInterpreter {
                 -1L,
                 -1,
                 false,
-                false,
+                true,
                 true,
                 AudioProgram.RendererSupport.CONTROL_ONLY,
-                AudioProgram.BranchEffect.BACKEND_ACTION,
+                AudioProgram.BranchEffect.PHASE_GATED_BACKEND,
                 AudioProgram.BranchEffect.STATE_ONLY,
                 MachineAudioSupport.slice(payload, offset, offset + 16));
     }
@@ -251,6 +254,6 @@ final class MachineControlInterpreter {
 
     private static int doubledValue(int raw) {
         if (raw == 0x80 || raw == 0xFF) return 0x40;
-        return raw <= 0x3F ? raw * 2 : raw;
+        return raw <= 0x3F ? raw * 2 : -1;
     }
 }

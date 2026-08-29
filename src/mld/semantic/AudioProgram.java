@@ -93,6 +93,7 @@ public final class AudioProgram {
     public enum RendererSupport {
         CONTROL_ONLY,
         VERIFIED_8001_4BIT,
+        VERIFIED_8002_AWC2_4BIT,
         RECOGNIZED_UNSUPPORTED
     }
 
