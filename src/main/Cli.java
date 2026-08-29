@@ -52,9 +52,9 @@ public final class Cli {
 
         MdNormalizationResult md = new MdNormalizer().normalize(track.decodedTracks);
         List<String> combinedWarnings = collectWarnings(track.program, track.midi, md);
-        System.out.print(renderSummary(track.document, track.midi, md));
+        System.out.print(renderSummary(track.document, track.program, track.midi, md));
 
-        play(workflow, track, resolvePlaybackLoopCount(track.midi, arguments));
+        play(workflow, track, resolvePlaybackLoopCount(arguments));
 
         if (!combinedWarnings.isEmpty()) {
             System.out.print(renderWarnings(combinedWarnings));
@@ -74,7 +74,7 @@ public final class Cli {
             return;
         }
 
-        PlaybackContent content = workflow.preparePlayback(track, loopCount);
+        PlaybackContent content = workflow.preparePlayback(track);
         new PlaybackSession().play(
                 content,
                 loopCount,
@@ -83,7 +83,7 @@ public final class Cli {
                 null);
     }
 
-    static String renderSummary(MldDocument file, MidiPlan midi, MdNormalizationResult md) {
+    static String renderSummary(MldDocument file, NativeProgram program, MidiPlan midi, MdNormalizationResult md) {
         MetadataSummary metadata = MetadataSummary.from(file);
         StringBuilder builder = new StringBuilder();
 
@@ -96,19 +96,20 @@ public final class Cli {
         builder.append("Compiled notes: ").append(midi.notes.size()).append(System.lineSeparator());
         builder.append("Mapped controls: ").append(midi.mappedControls.size()).append(System.lineSeparator());
         builder.append("Unknown events: ").append(md.unknownEvents.size()).append(System.lineSeparator());
-        if (midi.loopInfo.hasLoop) {
-            builder.append("Loop: yes (slot=")
-                    .append(midi.loopInfo.loopSlot)
-                    .append(", raw=")
-                    .append(midi.loopInfo.loopStartRawTick)
-                    .append(" -> ")
-                    .append(midi.loopInfo.loopEndRawTick)
-                    .append(", repeat=")
-                    .append(formatLoopCount(midi.loopInfo.repeatCount))
-                    .append(")")
-                    .append(System.lineSeparator());
+        if (program.loop.hasNativeLoops()) {
+            builder.append("Native DD loops: ")
+                    .append(program.loop.activations.size())
+                    .append(" activation(s), finite rewinds=")
+                    .append(program.loop.finiteRewindCount);
+            if (program.loop.hasInfiniteLoop()) {
+                builder.append(", infinite cycle raw=")
+                        .append(program.loop.infiniteRegion.loopStartRawTick)
+                        .append(" -> ")
+                        .append(program.loop.infiniteRegion.loopEndRawTick);
+            }
+            builder.append(System.lineSeparator());
         } else {
-            builder.append("Loop: no").append(System.lineSeparator());
+            builder.append("Native DD loops: no").append(System.lineSeparator());
         }
         builder.append(SECTION_DIVIDER).append(System.lineSeparator());
         return builder.toString();
@@ -137,19 +138,8 @@ public final class Cli {
         return builder.toString();
     }
 
-    private static int resolvePlaybackLoopCount(MidiPlan midi, Arguments arguments) {
-        boolean hasLoop = midi != null && midi.loopInfo != null && midi.loopInfo.hasLoop;
-        if (!hasLoop) {
-            return 0;
-        }
-        if (arguments.loopSpecified) {
-            return arguments.loopCount;
-        }
-        return -1;
-    }
-
-    private static String formatLoopCount(int loopCount) {
-        return loopCount < 0 ? "infinite" : String.valueOf(loopCount);
+    private static int resolvePlaybackLoopCount(Arguments arguments) {
+        return arguments.loopSpecified ? arguments.loopCount : 0;
     }
 
     private static void printUsage() {
@@ -160,10 +150,11 @@ public final class Cli {
         System.out.println("  java -jar mld-player.jar --gui      force the Swing player");
         System.out.println("Behavior:");
         System.out.println("  passing a file path starts CLI playback directly");
-        System.out.println("  looped files repeat infinitely by default");
+        System.out.println("  native finite DD loops execute their encoded repeat counts and continue");
+        System.out.println("  native infinite DD loops remain infinite; --loop repeats completed tracks");
         System.out.println("Options:");
         System.out.println("  --output <path>        optional parent directory for AUTO export into MFiExport");
-        System.out.println("  --loop [<value>]       override playback loop count; use without a value for infinite");
+        System.out.println("  --loop [<value>]       repeat the completed track; use without a value for infinite");
         System.out.println("  --help                 show this message");
     }
 

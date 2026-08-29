@@ -6,12 +6,12 @@ import java.util.List;
 public final class AudioPcmTimeline {
     private final int sampleRate;
     private final List<AudioPlaybackSource.Voice> voices;
-    private final boolean nativeLoop;
+    private final boolean nativeInfiniteLoop;
     private final long loopStartMicros;
     private final long loopEndMicros;
     private final long loopBodyMicros;
-    private final int requestedLoopCount;
-    private final int totalPasses;
+    private final int requestedWholeLoopCount;
+    private final int totalWholePasses;
     private final long wholePassMicros;
     private final long linearFrameCount;
     private final boolean infinite;
@@ -20,23 +20,23 @@ public final class AudioPcmTimeline {
     AudioPcmTimeline(
             int sampleRate,
             List<AudioPlaybackSource.Voice> voices,
-            boolean nativeLoop,
+            boolean nativeInfiniteLoop,
             long loopStartMicros,
             long loopEndMicros,
-            int requestedLoopCount,
+            int requestedWholeLoopCount,
             long wholePassMicros,
             long linearFrameCount) {
         this.sampleRate = sampleRate;
         this.voices = voices;
-        this.nativeLoop = nativeLoop;
+        this.nativeInfiniteLoop = nativeInfiniteLoop;
         this.loopStartMicros = Math.max(0L, loopStartMicros);
         this.loopEndMicros = Math.max(this.loopStartMicros + 1L, loopEndMicros);
         this.loopBodyMicros = Math.max(1L, this.loopEndMicros - this.loopStartMicros);
-        this.requestedLoopCount = requestedLoopCount;
-        this.totalPasses = requestedLoopCount < 0 ? -1 : Math.max(1, requestedLoopCount + 1);
+        this.requestedWholeLoopCount = requestedWholeLoopCount;
+        this.totalWholePasses = requestedWholeLoopCount < 0 ? -1 : Math.max(1, requestedWholeLoopCount + 1);
         this.wholePassMicros = Math.max(1L, wholePassMicros);
         this.linearFrameCount = Math.max(1L, linearFrameCount);
-        this.infinite = requestedLoopCount < 0;
+        this.infinite = nativeInfiniteLoop || requestedWholeLoopCount < 0;
         this.totalFrames = infinite ? Long.MAX_VALUE : finiteTotalFrames();
     }
 
@@ -61,20 +61,20 @@ public final class AudioPcmTimeline {
 
     private void mixVoiceInstances(
             int[] left, int[] right, long chunkStart, long chunkEnd, AudioPlaybackSource.Voice voice) {
-        if (nativeLoop) {
+        if (nativeInfiniteLoop) {
             if (voice.startMicros < loopStartMicros) {
                 AudioPlaybackSource.mixVoice(left, right, chunkStart, chunkEnd, voice, voice.startFrame);
                 return;
             }
             if (voice.startMicros >= loopEndMicros) return;
-            mixRepeated(left, right, chunkStart, chunkEnd, voice, loopBodyMicros, totalPasses);
+            mixRepeated(left, right, chunkStart, chunkEnd, voice, loopBodyMicros, -1);
             return;
         }
-        if (requestedLoopCount == 0) {
+        if (requestedWholeLoopCount == 0) {
             AudioPlaybackSource.mixVoice(left, right, chunkStart, chunkEnd, voice, voice.startFrame);
             return;
         }
-        mixRepeated(left, right, chunkStart, chunkEnd, voice, wholePassMicros, totalPasses);
+        mixRepeated(left, right, chunkStart, chunkEnd, voice, wholePassMicros, totalWholePasses);
     }
 
     private void mixRepeated(
@@ -114,26 +114,12 @@ public final class AudioPcmTimeline {
     }
 
     private long finiteTotalFrames() {
-        if (!nativeLoop) {
-            if (requestedLoopCount == 0) return linearFrameCount;
-            long nominalMicros = AudioPlaybackSource.safeMultiply(wholePassMicros, Math.max(1, totalPasses));
-            long end = Math.max(1L, AudioPlaybackSource.microsToFrameCeil(nominalMicros, sampleRate));
-            for (AudioPlaybackSource.Voice voice : voices) {
-                long lastStart = instanceStartFrame(voice, Math.max(0, totalPasses - 1), wholePassMicros);
-                end = Math.max(end, AudioPlaybackSource.safeAdd(lastStart, voice.frameCount));
-            }
-            return end;
-        }
-        long nominalMicros = AudioPlaybackSource.safeAdd(
-                loopStartMicros, AudioPlaybackSource.safeMultiply(loopBodyMicros, Math.max(1, totalPasses)));
+        if (requestedWholeLoopCount == 0) return linearFrameCount;
+        long nominalMicros = AudioPlaybackSource.safeMultiply(wholePassMicros, Math.max(1, totalWholePasses));
         long end = Math.max(1L, AudioPlaybackSource.microsToFrameCeil(nominalMicros, sampleRate));
         for (AudioPlaybackSource.Voice voice : voices) {
-            if (voice.startMicros < loopStartMicros) {
-                end = Math.max(end, AudioPlaybackSource.safeAdd(voice.startFrame, voice.frameCount));
-            } else if (voice.startMicros < loopEndMicros) {
-                long lastStart = instanceStartFrame(voice, Math.max(0, totalPasses - 1), loopBodyMicros);
-                end = Math.max(end, AudioPlaybackSource.safeAdd(lastStart, voice.frameCount));
-            }
+            long lastStart = instanceStartFrame(voice, Math.max(0, totalWholePasses - 1), wholePassMicros);
+            end = Math.max(end, AudioPlaybackSource.safeAdd(lastStart, voice.frameCount));
         }
         return end;
     }

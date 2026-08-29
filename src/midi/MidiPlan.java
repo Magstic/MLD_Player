@@ -58,61 +58,30 @@ public final class MidiPlan {
         }
     }
 
-    /** Host-loop metadata. Materialized plans retain the source loop range for playback reporting. */
+    /** Host transport metadata for one proven native infinite execution cycle. */
     public static final class LoopInfo {
         public final boolean hasLoop;
         public final int loopSlot;
-        public final int repeatCount;
         public final int loopStartRawTick;
         public final int loopEndRawTick;
         public final long loopStartMidiTick;
         public final long loopEndMidiTick;
-        public final boolean materializedLoopPasses;
-        public final int totalLoopPasses;
         public final List<String> warnings;
 
         public LoopInfo(
                 boolean hasLoop,
                 int loopSlot,
-                int repeatCount,
                 int loopStartRawTick,
                 int loopEndRawTick,
                 long loopStartMidiTick,
                 long loopEndMidiTick,
-                List<String> warnings) {
-            this(
-                    hasLoop,
-                    loopSlot,
-                    repeatCount,
-                    loopStartRawTick,
-                    loopEndRawTick,
-                    loopStartMidiTick,
-                    loopEndMidiTick,
-                    false,
-                    -1,
-                    warnings);
-        }
-
-        public LoopInfo(
-                boolean hasLoop,
-                int loopSlot,
-                int repeatCount,
-                int loopStartRawTick,
-                int loopEndRawTick,
-                long loopStartMidiTick,
-                long loopEndMidiTick,
-                boolean materializedLoopPasses,
-                int totalLoopPasses,
                 List<String> warnings) {
             this.hasLoop = hasLoop;
             this.loopSlot = loopSlot;
-            this.repeatCount = repeatCount;
             this.loopStartRawTick = loopStartRawTick;
             this.loopEndRawTick = loopEndRawTick;
             this.loopStartMidiTick = loopStartMidiTick;
             this.loopEndMidiTick = loopEndMidiTick;
-            this.materializedLoopPasses = materializedLoopPasses;
-            this.totalLoopPasses = totalLoopPasses;
             this.warnings = immutableCopy(warnings);
         }
 

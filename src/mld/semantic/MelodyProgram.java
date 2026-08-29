@@ -11,18 +11,61 @@ import java.util.List;
 public final class MelodyProgram {
     public final OrdinaryModel ordinaryModel;
     public final List<NativeNote> notes;
+    public final List<NoteAction> noteActions;
     public final List<GateSchedule> gateSchedules;
     public final List<NativeControl> controls;
     public final List<UnmappedControl> unmappedControls;
     private final int[] finalVoiceMap;
 
-    MelodyProgram(OrdinaryModel m, List<NativeNote> n, List<GateSchedule> g, List<NativeControl> c, List<UnmappedControl> u, int[] v) {
+    MelodyProgram(
+            OrdinaryModel m,
+            List<NativeNote> n,
+            List<NoteAction> a,
+            List<GateSchedule> g,
+            List<NativeControl> c,
+            List<UnmappedControl> u,
+            int[] v) {
         ordinaryModel = m;
         notes = immutable(n);
+        noteActions = immutable(a);
         gateSchedules = immutable(g);
         controls = immutable(c);
         unmappedControls = immutable(u);
         finalVoiceMap = Arrays.copyOf(v, v.length);
+    }
+
+    /** Immediate native note transition used by the live semantic transport. */
+    public static final class NoteAction {
+        public final boolean noteOn;
+        public final int sourceTrack;
+        public final int sourceVoice;
+        public final int logicalChannel;
+        public final int pitchOffset;
+        public final int velocity;
+        public final int rawTick;
+        public final int order;
+        public final ChannelSnapshot channel;
+
+        NoteAction(
+                boolean noteOn,
+                int sourceTrack,
+                int sourceVoice,
+                int logicalChannel,
+                int pitchOffset,
+                int velocity,
+                int rawTick,
+                int order,
+                ChannelSnapshot channel) {
+            this.noteOn = noteOn;
+            this.sourceTrack = sourceTrack;
+            this.sourceVoice = sourceVoice;
+            this.logicalChannel = logicalChannel;
+            this.pitchOffset = pitchOffset;
+            this.velocity = velocity;
+            this.rawTick = rawTick;
+            this.order = order;
+            this.channel = channel;
+        }
     }
 
     public int[] copyFinalVoiceMap() {

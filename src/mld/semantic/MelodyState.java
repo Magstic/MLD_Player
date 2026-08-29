@@ -32,6 +32,7 @@ final class MelodyState {
     private static final String PATH_GLOBAL = "global";
     private static final String PATH_VOICE = "voice_assignment";
     private final List<MelodyProgram.NativeNote> notes = new ArrayList<MelodyProgram.NativeNote>();
+    private final List<MelodyProgram.NoteAction> noteActions = new ArrayList<MelodyProgram.NoteAction>();
     private final List<MelodyProgram.GateSchedule> gateSchedules = new ArrayList<MelodyProgram.GateSchedule>();
     private final List<MelodyProgram.NativeControl> controls = new ArrayList<MelodyProgram.NativeControl>();
     private final List<MelodyProgram.UnmappedControl> unmappedControls = new ArrayList<MelodyProgram.UnmappedControl>();
@@ -92,6 +93,9 @@ final class MelodyState {
                         order,
                         snapshot(ch),
                         sounding));
+        if (sounding) {
+            noteActions.add(activeNotes.get(key).toAction(true, e.rawTick));
+        }
         return rawEnd;
     }
 
@@ -203,7 +207,10 @@ final class MelodyState {
             ActiveNote a = it.next().getValue();
             if (a.rawEndTick > current) continue;
             max = Math.max(max, a.rawEndTick);
-            if (a.sounding) notes.add(a.toNativeNote(a.rawEndTick));
+            if (a.sounding) {
+                notes.add(a.toNativeNote(a.rawEndTick));
+                noteActions.add(a.toAction(false, a.rawEndTick));
+            }
             it.remove();
         }
         return max;
@@ -213,14 +220,77 @@ final class MelodyState {
         return new MelodyProgram(
                 new MelodyProgram.OrdinaryModel(true, 128, RULE, true, true, true, true),
                 notes,
+                noteActions,
                 gateSchedules,
                 controls,
                 unmappedControls,
                 voiceMap);
     }
 
+    MelodyProgram drain() {
+        MelodyProgram result = finish();
+        notes.clear();
+        noteActions.clear();
+        gateSchedules.clear();
+        controls.clear();
+        unmappedControls.clear();
+        return result;
+    }
+
     int[] voiceMap() {
         return voiceMap;
+    }
+
+    String runtimeFingerprint(int rawOrigin) {
+        StringBuilder out = new StringBuilder();
+        out.append(masterVolume).append('|');
+        for (int value : voiceMap) out.append(value).append(',');
+        out.append('|');
+        for (ChannelState channel : channels) {
+            out.append(channel.mode).append(',')
+                    .append(channel.bank).append(',')
+                    .append(channel.program).append(',')
+                    .append(channel.level).append(',')
+                    .append(channel.pan).append(',')
+                    .append(channel.pitchCoarse).append(',')
+                    .append(channel.pitchFine).append(',')
+                    .append(channel.pitchRange).append(',')
+                    .append(channel.modulation).append(',')
+                    .append(channel.noteOnSuppressed ? 1 : 0).append(';');
+        }
+        out.append('|');
+        for (Map.Entry<Integer, ActiveNote> entry : activeNotes.entrySet()) {
+            ActiveNote note = entry.getValue();
+            out.append(entry.getKey()).append(':')
+                    .append(note.sourceTrack).append(',')
+                    .append(note.sourceVoice).append(',')
+                    .append(note.logicalChannel).append(',')
+                    .append(note.nativeNote).append(',')
+                    .append(note.pitchOffset).append(',')
+                    .append(note.rawStartTick - rawOrigin).append(',')
+                    .append(note.rawEndTick - rawOrigin).append(',')
+                    .append(note.velocity).append(',')
+                    .append(note.sounding ? 1 : 0).append(',');
+            appendSnapshot(out, note.channel).append(';');
+        }
+        return out.toString();
+    }
+
+    private static StringBuilder appendSnapshot(
+            StringBuilder out, MelodyProgram.ChannelSnapshot channel) {
+        return out.append(channel.mode).append(',')
+                .append(channel.bank).append(',')
+                .append(channel.program).append(',')
+                .append(channel.level).append(',')
+                .append(channel.pan).append(',')
+                .append(channel.pitchCoarse).append(',')
+                .append(channel.pitchFine).append(',')
+                .append(channel.pitchRange).append(',')
+                .append(channel.modulation).append(',')
+                .append(channel.noteOnSuppressed ? 1 : 0).append(',')
+                .append(channel.nativeKind).append(',')
+                .append(channel.nativeSub).append(',')
+                .append(channel.nativeValue);
     }
 
     private void program(SystemEvent e, int o) {
@@ -319,7 +389,10 @@ final class MelodyState {
         while (it.hasNext()) {
             ActiveNote a = it.next().getValue();
             int end = Math.max(a.rawStartTick, raw);
-            if (a.sounding) notes.add(a.toNativeNote(end));
+            if (a.sounding) {
+                notes.add(a.toNativeNote(end));
+                noteActions.add(a.toAction(false, end));
+            }
             it.remove();
         }
     }
@@ -513,6 +586,19 @@ final class MelodyState {
 
         MelodyProgram.NativeNote toNativeNote(int end) {
             return new MelodyProgram.NativeNote(sourceTrack, sourceVoice, logicalChannel, nativeNote, pitchOffset, velocity, rawStartTick, end, order, channel);
+        }
+
+        MelodyProgram.NoteAction toAction(boolean noteOn, int rawTick) {
+            return new MelodyProgram.NoteAction(
+                    noteOn,
+                    sourceTrack,
+                    sourceVoice,
+                    logicalChannel,
+                    pitchOffset,
+                    velocity,
+                    rawTick,
+                    order,
+                    channel);
         }
     }
 }

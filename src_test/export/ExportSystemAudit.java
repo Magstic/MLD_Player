@@ -31,8 +31,9 @@ public final class ExportSystemAudit {
     public static void main(String[] args) throws Exception {
         auditAutoNamingAndWavEncoding();
         auditExplicitModes();
-        auditLoopMidiDirectoryAndSegments();
-        auditWavIgnoresNativeLoopMaterialization();
+        auditFiniteLoopMidiLinearExport();
+        auditInfiniteLoopMidiSegmentExport();
+        auditWavUsesSemanticFiniteLoopTimeline();
         System.out.println("ExportSystemAudit: PASS");
     }
 
@@ -75,54 +76,77 @@ public final class ExportSystemAudit {
     }
 
 
-    private static void auditLoopMidiDirectoryAndSegments() throws Exception {
+    private static void auditFiniteLoopMidiLinearExport() throws Exception {
         Path parent = Files.createTempDirectory("mld-export-midi-loop-");
         try {
             List<TrackEvent> events = new ArrayList<TrackEvent>();
             events.add(note(0, 0, 8));
             events.add(system(1, 10, 0xDD, 0x00));
             events.add(note(2, 12, 4));
-            events.add(system(3, 20, 0xDD, 0x09));
-            Compiled compiled = compile(events, 20);
-            yes("native loop projected", compiled.midi.loopInfo.hasLoop);
+            events.add(system(3, 20, 0xDD, 0x09)); // finite N=2
+            events.add(note(4, 25, 3)); // suffix must remain reachable
+            Compiled compiled = compile(events, 25);
+            no("finite DD has no host loop projection", compiled.midi.loopInfo.hasLoop);
+            eq("finite DD rewind count", 2, compiled.program.loop.finiteRewindCount);
+            eq("finite DD projected note count", 5, compiled.midi.notes.size());
 
             ExportService.ExportArtifacts out = new ExportService().exportPrepared(
                     compiled.program, compiled.midi, parent.resolve("looped.mld"), parent, ExportMode.AUTO);
 
             Path root = parent.resolve(ExportService.OUTPUT_DIRECTORY_NAME);
-            Path dir = root.resolve("looped");
-            yes("loop export directory", Files.isDirectory(dir));
-            pathName("loop primary MIDI", "looped.mid", out.midiPath);
-            pathName("loop intro MIDI", "looped.intro.mid", out.introMidiPath);
-            pathName("loop body MIDI", "looped.loop.mid", out.loopMidiPath);
-            isNull("loop melody WAV", out.wavPath);
-            eqPath("primary parent", dir, out.midiPath.getParent());
-            eqPath("intro parent", dir, out.introMidiPath.getParent());
-            eqPath("loop parent", dir, out.loopMidiPath.getParent());
-            no("no flat primary for loop export", Files.exists(root.resolve("looped.mid")));
+            pathName("finite loop primary MIDI", "looped.mid", out.midiPath);
+            isNull("finite loop intro segment", out.introMidiPath);
+            isNull("finite loop body segment", out.loopMidiPath);
+            isNull("finite loop melody WAV", out.wavPath);
+            eqPath("finite loop flat parent", root, out.midiPath.getParent());
+            no("finite loop does not create segment directory", Files.exists(root.resolve("looped")));
 
             Sequence primary = MidiSystem.getSequence(out.midiPath.toFile());
-            Sequence intro = MidiSystem.getSequence(out.introMidiPath.toFile());
-            Sequence loop = MidiSystem.getSequence(out.loopMidiPath.toFile());
-            long loopStart = compiled.midi.loopInfo.loopStartMidiTick;
-            long loopEnd = compiled.midi.loopInfo.loopEndMidiTick;
-            eqLong("primary linear end", loopEnd + 1L, primary.getTickLength());
-            eqLong("intro segment end", Math.max(1L, loopStart) + 1L, intro.getTickLength());
-            eqLong("loop segment end", Math.max(1L, loopEnd - loopStart) + 1L, loop.getTickLength());
+            eqLong("finite loop full linear end", compiled.midi.totalMidiTicks + 1L, primary.getTickLength());
 
-
-            List<TrackEvent> mixedEvents = new ArrayList<TrackEvent>(events);
-            mixedEvents.add(audio(4, 14, 8, 0x45));
-            Compiled mixed = compile(mixedEvents, 20);
+            List<TrackEvent> mixedEvents = new ArrayList<TrackEvent>();
+            mixedEvents.add(note(0, 0, 8));
+            mixedEvents.add(system(1, 10, 0xDD, 0x00));
+            mixedEvents.add(note(2, 12, 4));
+            mixedEvents.add(audio(5, 14, 8, 0x45));
+            mixedEvents.add(system(3, 20, 0xDD, 0x09));
+            mixedEvents.add(note(4, 25, 3));
+            Compiled mixed = compile(mixedEvents, 25);
+            eq("mixed finite sampled action executions", 3, mixed.program.audio.actions.size());
             ExportService.ExportArtifacts mixedOut = new ExportService().exportPrepared(
                     mixed.program, mixed.midi, parent.resolve("mixed-loop.mld"), parent, ExportMode.AUTO);
-            Path mixedDir = root.resolve("mixed-loop");
-            yes("mixed loop export directory", Files.isDirectory(mixedDir));
-            eqPath("mixed primary parent", mixedDir, mixedOut.midiPath.getParent());
-            eqPath("mixed intro parent", mixedDir, mixedOut.introMidiPath.getParent());
-            eqPath("mixed loop parent", mixedDir, mixedOut.loopMidiPath.getParent());
-            pathName("mixed loop WAV", "mixed-loop.sfx.wav", mixedOut.wavPath);
-            eqPath("mixed WAV parent", mixedDir, mixedOut.wavPath.getParent());
+            eqPath("mixed finite MIDI parent", root, mixedOut.midiPath.getParent());
+            isNull("mixed finite intro segment", mixedOut.introMidiPath);
+            isNull("mixed finite loop segment", mixedOut.loopMidiPath);
+            pathName("mixed finite WAV", "mixed-loop.sfx.wav", mixedOut.wavPath);
+            eqPath("mixed finite WAV parent", root, mixedOut.wavPath.getParent());
+        } finally {
+            deleteTree(parent);
+        }
+    }
+
+    private static void auditInfiniteLoopMidiSegmentExport() throws Exception {
+        Path parent = Files.createTempDirectory("mld-export-midi-infinite-");
+        try {
+            List<TrackEvent> events = new ArrayList<TrackEvent>();
+            events.add(note(0, 0, 4));
+            events.add(system(1, 10, 0xDD, 0x00));
+            events.add(note(2, 12, 4));
+            events.add(system(3, 20, 0xDD, 0x01)); // repeat nibble 0 -> native infinite
+            events.add(note(4, 25, 3)); // unreachable suffix
+            Compiled compiled = compile(events, 25);
+            yes("native infinite has host loop projection", compiled.midi.loopInfo.hasLoop);
+
+            ExportService.ExportArtifacts out = new ExportService().exportPrepared(
+                    compiled.program, compiled.midi, parent.resolve("infinite.mld"), parent, ExportMode.AUTO);
+            Path dir = parent.resolve(ExportService.OUTPUT_DIRECTORY_NAME).resolve("infinite");
+            eqPath("infinite export segment directory", dir, out.midiPath.getParent());
+            pathName("infinite full MIDI", "infinite.mid", out.midiPath);
+            pathName("infinite intro MIDI", "infinite.intro.mid", out.introMidiPath);
+            pathName("infinite cycle MIDI", "infinite.loop.mid", out.loopMidiPath);
+            isNull("infinite melody WAV", out.wavPath);
+            yes("infinite intro exists", Files.isRegularFile(out.introMidiPath));
+            yes("infinite cycle exists", Files.isRegularFile(out.loopMidiPath));
         } finally {
             deleteTree(parent);
         }
@@ -154,7 +178,7 @@ public final class ExportSystemAudit {
         }
     }
 
-    private static void auditWavIgnoresNativeLoopMaterialization() throws Exception {
+    private static void auditWavUsesSemanticFiniteLoopTimeline() throws Exception {
         Path parent = Files.createTempDirectory("mld-export-loop-");
         try {
             List<TrackEvent> events = new ArrayList<TrackEvent>();

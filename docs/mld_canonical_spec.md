@@ -439,9 +439,11 @@ The helper owns the ordinary note-on suppression flag described in the note sect
 
 Operations:
 
-- `0`: capture loop start time and per-track parser/scheduler cursor snapshots for slot `0..3`
+- `0`: advance past the start command, then save the loop time and every track's position in slot `0..3`
 - `1`: loop end
 - `2,3`: consumed with no loop action
+
+Each slot stores a track-position snapshot and repeat counter. A new operation `0` replaces that slot's snapshot. Rewind restores track positions, not the counters.
 
 Repeat rule:
 
@@ -449,8 +451,15 @@ Repeat rule:
 - nibble `1..15`: that many additional passes
 - total body passes for finite loop: `repeatNibble + 1`
 
-Loop rewind restores captured parser/scheduler cursors across all track contexts.
-Four loop slots can remain live independently.
+Because the snapshot is taken after the start command, rewind does not run that command again. After the last pass, execution continues after the end command.
+
+The four slots may be sequential, nested, or crossing. Rewinding one slot may run another slot's commands again, so the result cannot be represented by one fixed source range.
+
+- Every pass runs its timing, melody, control, and sampled-audio events again.
+- Infinite playback starts when the parser state repeats. This identifies the recurring events but does not mean their results stay unchanged.
+- Tempo, volume, melody, and audio changes carry into later passes.
+- Sampled audio repeats only when the next pass has the same state, duration, and audio actions. Otherwise sampled-audio playback is rejected.
+- After a long stall, MIDI skips expired messages and restores the current controllers and notes.
 
 Zero-duration rule:
 

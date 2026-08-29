@@ -26,7 +26,7 @@ final class MidiProjectionState {
     private static final boolean PSM_EMIT_SYNTHETIC_PATCH_SYNC_CONTROLS = false;
     private static final String PATCH_SYNC_VOLUME_SOURCE = "patch_sync_volume";
     private static final String PATCH_SYNC_PAN_SOURCE = "patch_sync_pan_zero";
-    private final MidiTimingMapper timing;
+    private MidiTimingMapper timing;
     private final List<String> warnings;
     private final List<MidiPlan.CompiledNote> notes = new ArrayList<MidiPlan.CompiledNote>();
     private final List<MidiPlan.MappedControlEvent> controls = new ArrayList<MidiPlan.MappedControlEvent>();
@@ -38,6 +38,24 @@ final class MidiProjectionState {
         timing = t;
         warnings = w;
         emitInitialMidiDefaults(0);
+    }
+
+    void setTiming(MidiTimingMapper timing) {
+        if (timing == null) throw new IllegalArgumentException("MIDI timing mapper is required.");
+        this.timing = timing;
+    }
+
+    void discardProjectedOutput() {
+        notes.clear();
+        controls.clear();
+    }
+
+    List<MidiPlan.MappedControlEvent> drainProjectedControls() {
+        List<MidiPlan.MappedControlEvent> result =
+                new ArrayList<MidiPlan.MappedControlEvent>(controls);
+        notes.clear();
+        controls.clear();
+        return result;
     }
 
     Result project(NativeProgram p) {

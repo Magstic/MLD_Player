@@ -43,6 +43,48 @@ public final class TimingModel {
         return micros;
     }
 
+    /** Inverse of the executed raw-tick clock, used for transport presentation. */
+    public int microsToRawTick(long micros) {
+        if (micros <= 0L) return 0;
+        long remaining = micros;
+        Point current = points.get(0);
+        int currentRaw = 0;
+        for (int i = 1; i < points.size(); i++) {
+            Point next = points.get(i);
+            int rawDelta = Math.max(0, next.rawTick - currentRaw);
+            long segmentMicros = rawDurationToMicros(rawDelta, current.timebase, current.tempo);
+            if (remaining < segmentMicros) {
+                return normalizeInverse(micros, safeRawAdd(currentRaw, microsToRawDuration(
+                        remaining, current.timebase, current.tempo)));
+            }
+            remaining -= segmentMicros;
+            currentRaw = next.rawTick;
+            current = next;
+        }
+        return normalizeInverse(micros, safeRawAdd(currentRaw, microsToRawDuration(
+                remaining, current.timebase, current.tempo)));
+    }
+
+    private int normalizeInverse(long micros, int candidate) {
+        int raw = Math.max(0, candidate);
+        while (raw < Integer.MAX_VALUE && rawTickToMicros(raw + 1) <= micros) raw++;
+        while (raw > 0 && rawTickToMicros(raw) > micros) raw--;
+        return raw;
+    }
+
+    private static int microsToRawDuration(long micros, int timebase, int tempo) {
+        if (micros <= 0L) return 0;
+        long scale = (long) Math.max(1, timebase) * Math.max(1, tempo);
+        if (micros > Long.MAX_VALUE / scale) return Integer.MAX_VALUE;
+        long raw = (micros * scale) / 60000000L;
+        return raw > Integer.MAX_VALUE ? Integer.MAX_VALUE : (int) raw;
+    }
+
+    private static int safeRawAdd(int left, int right) {
+        long sum = (long) left + right;
+        return sum > Integer.MAX_VALUE ? Integer.MAX_VALUE : (int) sum;
+    }
+
     public static long rawDurationToMicros(int rawDuration, int timebase, int tempo) {
         if (rawDuration <= 0) return 0;
         return (60000000L * rawDuration) / ((long)Math.max(1, timebase) * Math.max(1, tempo));

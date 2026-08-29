@@ -13,6 +13,7 @@ public final class NativeProgram {
     public final LoopModel loop;
     public final MelodyProgram melody;
     public final AudioProgram audio;
+    public final NativeLoopPlan nativeLoop;
     public final int linearEndRawTick;
     public final int semanticEndRawTick;
     public final List<String> warnings;
@@ -24,6 +25,7 @@ public final class NativeProgram {
             LoopModel loop,
             MelodyProgram melody,
             AudioProgram audio,
+            NativeLoopPlan nativeLoop,
             int linearEndRawTick,
             int semanticEndRawTick,
             List<String> warnings,
@@ -33,6 +35,7 @@ public final class NativeProgram {
         this.loop = loop;
         this.melody = melody;
         this.audio = audio;
+        this.nativeLoop = nativeLoop;
         this.linearEndRawTick = Math.max(0, linearEndRawTick);
         this.semanticEndRawTick = Math.max(this.linearEndRawTick, semanticEndRawTick);
         this.warnings = Collections.unmodifiableList(new ArrayList<String>(warnings));

@@ -1,6 +1,7 @@
 package mld.semantic;
 
 import java.util.Collections;
+import java.util.List;
 
 import midi.MidiPlan;
 import midi.MidiProjector;
@@ -18,7 +19,11 @@ final class SemanticTestSupport {
     }
 
     static SemanticTestSupport compile(MldDocument document, DecodedTrack track) {
-        NativeProgram program = new NativeCompiler().compile(document, Collections.singletonList(track));
+        return compile(document, Collections.singletonList(track));
+    }
+
+    static SemanticTestSupport compile(MldDocument document, List<DecodedTrack> tracks) {
+        NativeProgram program = new NativeCompiler().compile(document, tracks);
         return new SemanticTestSupport(program, new MidiProjector().project(program));
     }
 }

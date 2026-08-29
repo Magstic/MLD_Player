@@ -36,6 +36,7 @@ public final class ArchitectureClosureAudit {
         auditSemanticBoundary(sourceRoot);
         auditAudioOwnership(sourceRoot, sources);
         auditSingleMidiSerializer(sourceRoot, sources);
+        auditDirectMidiPlayback(sourceRoot);
         auditExportOwnership(sourceRoot, sources);
         auditDeviceOwnership(sourceRoot, sources);
         auditSwingBoundary(sourceRoot);
@@ -176,6 +177,36 @@ public final class ArchitectureClosureAudit {
                     fail("duplicate MIDI sequence serialization in " + unix(source) + ": " + token);
                 }
             }
+        }
+    }
+
+    private static void auditDirectMidiPlayback(Path sourceRoot) throws IOException {
+        String session = read(sourceRoot.resolve("playback/PlaybackSession.java"));
+        if (session.contains("Sequencer") || session.contains("setTickPosition")
+                || session.contains("setMicrosecondPosition")) {
+            fail("PlaybackSession must schedule projected MIDI directly; sequencer seek/loop ownership returned");
+        }
+        if (Files.exists(sourceRoot.resolve("playback/MidiTransportReceiver.java"))) {
+            fail("obsolete sequencer chase filter remains in production playback");
+        }
+        String encoder = read(sourceRoot.resolve("midi/MidiSequenceEncoder.java"));
+        if (encoder.contains("ensurePlaybackLoopFence") || encoder.contains("ensurePlaybackGuard")) {
+            fail("MIDI file serializer regained playback-only loop mutation");
+        }
+        String participant = read(sourceRoot.resolve("playback/MidiPlaybackParticipant.java"));
+        if (!participant.contains("nativeRuntime.nextCycle()")
+                || !participant.contains("fastForwardRemainder(now)")
+                || !participant.contains("sendStateSnapshot()")) {
+            fail("direct MIDI playback must consume continuing semantics and rebuild late state");
+        }
+        if (participant.contains("repeatLoopEvents")) {
+            fail("direct MIDI playback regained a frozen infinite MIDI template");
+        }
+        String runtime = read(sourceRoot.resolve("mld/semantic/NativeLoopRuntime.java"));
+        if (!runtime.contains("TimingState.Runtime")
+                || !runtime.contains("MelodyState")
+                || !runtime.contains("AudioSemanticState")) {
+            fail("native loop runtime must own complete continuing semantic state");
         }
     }
 

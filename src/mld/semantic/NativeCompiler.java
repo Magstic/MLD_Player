@@ -13,24 +13,22 @@ import mld.decode.SystemEvent;
 import mld.decode.TrackEvent;
 import mld.format.MldDocument;
 
-/**
- * Single coordinator for native event ordering and semantic state ownership.
- */
+/** Coordinates semantic state compilation over the scheduled native execution timeline. */
 public final class NativeCompiler {
 
     public NativeProgram compile(MldDocument document, List<DecodedTrack> decodedTracks) {
         List<String> warnings = new ArrayList<String>();
         Set<String> keys = new LinkedHashSet<String>();
         ContainerRules.emitFirstOnlyWarnings(document, warnings, keys);
-        TimingState.Analysis timing = TimingState.analyze(decodedTracks, warnings);
+        NativeEventScheduler.Execution execution = NativeEventScheduler.schedule(decodedTracks, warnings);
+        TimingState.Analysis timing = TimingState.analyze(execution.events, warnings);
         TimingState.Runtime timingRuntime = TimingState.newRuntime();
         MelodyState melody = new MelodyState(Math.max(16, document.trackCount * 4), warnings, keys);
         AudioSemanticState audio = new AudioSemanticState(document, warnings, keys);
         int linearEnd = 0;
         int semanticEnd = 0;
         int order = 0;
-        for (TrackEvent event : timing.orderedEvents) {
-            if (timing.stopEvent != null && TimingState.EVENT_ORDER.compare(event, timing.stopEvent) > 0) break;
+        for (TrackEvent event : timing.events) {
             semanticEnd = Math.max(semanticEnd, melody.flushExpired(event.rawTick));
             linearEnd = Math.max(linearEnd, event.rawTick);
             semanticEnd = Math.max(semanticEnd, event.rawTick);
@@ -52,22 +50,18 @@ public final class NativeCompiler {
             }
         }
         semanticEnd = Math.max(semanticEnd, melody.flushExpired(Integer.MAX_VALUE));
-        for (DecodedTrack t : decodedTracks) {
-            int end = timing.stopEvent == null ? t.totalRawTicks : Math.min(t.totalRawTicks, timing.stopEvent.rawTick);
-            linearEnd = Math.max(linearEnd, end);
-            semanticEnd = Math.max(semanticEnd, end);
-        }
-        if (timing.loop.hasLoop) {
-            linearEnd = Math.max(linearEnd, timing.loop.loopEndRawTick);
-            semanticEnd = Math.max(semanticEnd, timing.loop.loopEndRawTick);
-        }
+        linearEnd = Math.max(linearEnd, execution.endRawTick);
+        semanticEnd = Math.max(semanticEnd, execution.endRawTick);
         AudioProgram audioProgram = audio.finish();
+        NativeLoopPlan nativeLoop = execution.loop.hasInfiniteLoop()
+                ? new NativeLoopPlan(document, execution) : null;
         return new NativeProgram(
                 document.trackCount,
                 timing.timing,
-                timing.loop,
+                execution.loop,
                 melody.finish(),
                 audioProgram,
+                nativeLoop,
                 linearEnd,
                 semanticEnd,
                 warnings,

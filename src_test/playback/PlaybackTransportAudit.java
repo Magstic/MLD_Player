@@ -4,22 +4,20 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicLong;
-import java.lang.reflect.InvocationHandler;
-import java.lang.reflect.Method;
-import java.lang.reflect.Proxy;
 
-import javax.sound.midi.Sequencer;
+import javax.sound.midi.MidiMessage;
+import javax.sound.midi.Receiver;
+import javax.sound.midi.ShortMessage;
 
 import audio.AudioPcmTimeline;
 import audio.AudioPlaybackSource;
 import audio.AudioRenderer;
 import audio.StereoPcm;
-import midi.MidiLoopMaterializer;
 import midi.MidiPlan;
 import midi.MidiProjector;
-import midi.MidiSequenceEncoder;
 import mld.decode.DecodedTrack;
 import mld.decode.MachineDependentEvent;
+import mld.decode.NoteEvent;
 import mld.decode.SystemEvent;
 import mld.decode.TrackDecoder;
 import mld.decode.TrackEvent;
@@ -31,14 +29,19 @@ import mld.semantic.NativeProgram;
 public final class PlaybackTransportAudit {
     public static void main(String[] args) throws Exception {
         auditMonotonicPauseClock();
-        auditMaterializedNativeLoopTimeline();
+        auditFiniteNativeLoopTimeline();
         auditInfiniteNativeLoopTimeline();
+        auditNativeLoopProgressRewinds();
         auditWholeProgramRepeatTimeline();
         auditPcmLoopFrameMapping();
+        auditEvolvingNativeLoopPcmFailsClosed();
         auditPreLoopVoiceTailIsNotRepeated();
         auditLoopVoiceTailCrossesPassBoundary();
-        auditPcmOnlyFiniteLoopIncludesTail();
+        auditPcmOnlyWholeRepeatIncludesTail();
         auditMixedWholeRepeatBoundaryRestart();
+        auditPauseResumeRestoresHeldNotes();
+        auditNativeInfiniteDirectRepeat();
+        auditLateNativeLoopRebuildsCurrentState();
         auditPlaybackModes();
         System.out.println("PlaybackTransportAudit: PASS");
     }
@@ -57,45 +60,72 @@ public final class PlaybackTransportAudit {
         eqLong("clock resumed", 4000L, clock.positionMicros());
     }
 
-    private static void auditMaterializedNativeLoopTimeline() throws Exception {
+    private static void auditFiniteNativeLoopTimeline() throws Exception {
         NativeProgram program = loopProgram(false);
-        MidiPlan original = new MidiProjector().project(program);
-        MidiPlan materialized = new MidiLoopMaterializer().materializeFiniteLoop(original, 2);
-        MidiSequenceEncoder.EncodedSequence midi = new MidiSequenceEncoder().encode(materialized);
+        MidiPlan midi = new MidiProjector().project(program);
         TransportTimeline timeline = TransportTimeline.from(
-                new PlaybackContent(midi, null, program.timing, program.loop), 2);
+                new PlaybackContent(midi, null, program), 0);
 
-        eqBool("materialized finite", false, timeline.infinite);
-        eqBool("materialized native loop", true, timeline.materializedNativeLoop);
-        eqLong("native loop start us", 100000L, timeline.loopStartMicros);
-        eqLong("native loop end us", 200000L, timeline.loopEndMicros);
-        eq("native loop passes", 3, timeline.totalPasses);
-        eqText("materialized intro", "intro", timeline.progress(50000L, false).label);
-        eqText("materialized pass 1", "loop 1/3", timeline.progress(100000L, false).label);
-        eqText("materialized pass 2", "loop 2/3", timeline.progress(210000L, false).label);
-        eqText("materialized description", "3 passes", timeline.describeLoop());
-        eqLong("materialized MIDI is linear", 210000L, timeline.midiPositionMicros(210000L));
+        eqBool("finite DD is semantically materialized", false, program.loop.hasInfiniteLoop());
+        eqBool("finite DD transport is linear", false, timeline.hasLoopRegion);
+        eq("finite DD native rewinds", 2, program.loop.finiteRewindCount);
+        eqText("finite DD transport description", "once", timeline.describeLoop());
+        eqLong("finite DD MIDI stays linear", timeline.baseDurationMicros / 2L,
+                timeline.midiPositionMicros(timeline.baseDurationMicros / 2L));
     }
 
     private static void auditInfiniteNativeLoopTimeline() throws Exception {
-        NativeProgram program = loopProgram(false);
-        MidiSequenceEncoder.EncodedSequence midi = new MidiSequenceEncoder().encode(
-                new MidiProjector().project(program));
+        NativeProgram program = infiniteLoopProgram(false);
+        MidiPlan midi = new MidiProjector().project(program);
         TransportTimeline timeline = TransportTimeline.from(
-                new PlaybackContent(midi, null, program.timing, program.loop), -1);
+                new PlaybackContent(midi, null, program), 0);
 
         eqBool("native infinite", true, timeline.infinite);
         eqText("native infinite description", "infinite", timeline.describeLoop());
-        eqLong("native infinite source pass 1", 150000L, timeline.midiPositionMicros(150000L));
-        eqLong("native infinite source pass 2", 150000L, timeline.midiPositionMicros(250000L));
-        eqText("native infinite label", "loop 2/inf", timeline.progress(250000L, false).label);
+        long halfLoop = timeline.loopBodyMicros / 2L;
+        eqLong("native infinite intro source", timeline.loopStartMicros - 1L,
+                timeline.midiPositionMicros(timeline.loopStartMicros - 1L));
+        eqLong("native infinite cycle pass 1", timeline.loopStartMicros + halfLoop,
+                timeline.midiPositionMicros(timeline.loopStartMicros + halfLoop));
+        eqLong("native infinite cycle pass 2", timeline.loopStartMicros + halfLoop,
+                timeline.midiPositionMicros(timeline.loopEndMicros + halfLoop));
+        eqText("native infinite label", "loop 2/inf",
+                timeline.progress(timeline.loopEndMicros + halfLoop, false).label);
+    }
+
+    private static void auditNativeLoopProgressRewinds() throws Exception {
+        List<TrackEvent> finiteEvents = new ArrayList<TrackEvent>();
+        finiteEvents.add(system(0, 10, 0xDD, 0x00));
+        finiteEvents.add(system(1, 15, 0xB3, 0x11));
+        finiteEvents.add(system(2, 20, 0xDD, 0x05));
+        finiteEvents.add(system(3, 30, 0xB3, 0x22));
+        NativeProgram finiteProgram = compile(finiteEvents, 30);
+        MidiPlan finiteMidi = new MidiProjector().project(finiteProgram);
+        TransportTimeline finite = TransportTimeline.from(
+                new PlaybackContent(finiteMidi, null, finiteProgram), 0);
+        double finiteBefore = finite.progress(
+                finiteProgram.timing.rawTickToMicros(19), false).fraction;
+        double finiteAfter = finite.progress(
+                finiteProgram.timing.rawTickToMicros(20), false).fraction;
+        if (!(finiteAfter < finiteBefore)) {
+            fail("finite DD progress rewind", "progress did not jump back at parser rewind");
+        }
+
+        NativeProgram infiniteProgram = infiniteLoopProgram(false);
+        MidiPlan infiniteMidi = new MidiProjector().project(infiniteProgram);
+        TransportTimeline infinite = TransportTimeline.from(
+                new PlaybackContent(infiniteMidi, null, infiniteProgram), 0);
+        double infiniteBefore = infinite.progress(infinite.loopEndMicros - 1L, false).fraction;
+        double infiniteAfter = infinite.progress(infinite.loopEndMicros, false).fraction;
+        if (!(infiniteBefore > 0.8 && infiniteAfter < infiniteBefore)) {
+            fail("infinite DD progress rewind", "progress did not reach the loop end then jump back");
+        }
     }
 
     private static void auditWholeProgramRepeatTimeline() throws Exception {
         NativeProgram program = plainProgram();
-        MidiSequenceEncoder.EncodedSequence midi = new MidiSequenceEncoder().encode(
-                new MidiProjector().project(program));
-        PlaybackContent content = new PlaybackContent(midi, null, program.timing, program.loop);
+        MidiPlan midi = new MidiProjector().project(program);
+        PlaybackContent content = new PlaybackContent(midi, null, program);
         TransportTimeline finite = TransportTimeline.from(content, 2);
         long base = finite.baseDurationMicros;
         eq("whole repeat passes", 3, finite.totalPasses);
@@ -109,16 +139,14 @@ public final class PlaybackTransportAudit {
     }
 
     private static void auditPcmLoopFrameMapping() throws Exception {
-        NativeProgram program = loopProgram(true);
+        NativeProgram program = infiniteLoopProgram(true);
         AudioRenderer renderer = new AudioRenderer();
         AudioPlaybackSource source = renderer.preparePlayback(program);
         StereoPcm linear = source.renderLinear();
-        MidiPlan materialized = new MidiLoopMaterializer().materializeFiniteLoop(
-                new MidiProjector().project(program), 1);
-        MidiSequenceEncoder.EncodedSequence midi = new MidiSequenceEncoder().encode(materialized);
+        MidiPlan midi = new MidiProjector().project(program);
         TransportTimeline timeline = TransportTimeline.from(
-                new PlaybackContent(midi, source, program.timing, program.loop), 1);
-        AudioPcmTimeline pcm = source.forTransport(1, timeline.baseDurationMicros);
+                new PlaybackContent(midi, source, program), 0);
+        AudioPcmTimeline pcm = source.forTransport(0, timeline.baseDurationMicros);
 
         long loopStartFrame = (timeline.loopStartMicros * linear.getSampleRate()) / 1000000L;
         long loopBodyFrames = (timeline.loopBodyMicros * linear.getSampleRate()) / 1000000L;
@@ -127,6 +155,27 @@ public final class PlaybackTransportAudit {
         eqBytes("16k PCM mapping preserves source frames",
                 pcmBytes(linear.copyInterleavedPcm16(), (int) loopStartFrame, 8), first);
         eqBytes("PCM loop body repeats from native boundary", first, repeated);
+    }
+
+    private static void auditEvolvingNativeLoopPcmFailsClosed() throws Exception {
+        List<TrackEvent> events = new ArrayList<TrackEvent>();
+        events.add(system(0, 10, 0xDD, 0x00));
+        events.add(audio(1, 10, 50, 0x4D));
+        events.add(system(2, 15, 0xBC, 0x41));
+        events.add(system(3, 20, 0xDD, 0x01));
+        NativeProgram program = compile(events, 20);
+        AudioRenderer renderer = new AudioRenderer();
+        eqBool("evolving native PCM template fails closed",
+                false, renderer.hasRenderableAudio(program));
+        try {
+            renderer.preparePlayback(program);
+            fail("evolving native PCM preparation", "expected fail-closed rejection");
+        } catch (IllegalArgumentException expected) {
+            if (expected.getMessage() == null
+                    || expected.getMessage().indexOf("evolving semantic state") < 0) {
+                fail("evolving native PCM diagnostic", String.valueOf(expected.getMessage()));
+            }
+        }
     }
 
 
@@ -170,103 +219,188 @@ public final class PlaybackTransportAudit {
     }
 
 
-    private static void auditPcmOnlyFiniteLoopIncludesTail() throws Exception {
+    private static void auditPcmOnlyWholeRepeatIncludesTail() throws Exception {
         List<TrackEvent> events = new ArrayList<TrackEvent>();
         events.add(system(0, 10, 0xDD, 0x00));
         events.add(audio(1, 19, 240, 0x4D));
         events.add(system(2, 20, 0xDD, 0x09));
         NativeProgram program = compile(events, 20);
         AudioPlaybackSource source = new AudioRenderer().preparePlayback(program);
-        PlaybackContent content = new PlaybackContent(null, source, program.timing, program.loop);
+        PlaybackContent content = new PlaybackContent(null, source, program);
         TransportTimeline timeline = TransportTimeline.from(content, 1);
         long audioDuration = source.transportDurationMicros(1, timeline.baseDurationMicros);
-        eqLong("PCM-only finite loop tail duration", audioDuration, timeline.totalDurationMicros);
-        long nominal = timeline.loopStartMicros + timeline.loopBodyMicros * 2L;
-        if (timeline.totalDurationMicros <= nominal) {
-            fail("PCM-only finite loop tail", "transport ended at nominal loop boundary");
-        }
+        eqLong("PCM-only whole-repeat duration", audioDuration, timeline.totalDurationMicros);
+        eqLong("PCM-only whole-repeat uses completed semantic pass",
+                timeline.baseDurationMicros * 2L, timeline.totalDurationMicros);
     }
 
     private static void auditMixedWholeRepeatBoundaryRestart() throws Exception {
         List<TrackEvent> midiEvents = new ArrayList<TrackEvent>();
         midiEvents.add(system(0, 1, 0xE2, 0x20));
         NativeProgram midiProgram = compile(midiEvents, 1);
-        MidiSequenceEncoder.EncodedSequence midi = new MidiSequenceEncoder().encode(
-                new MidiProjector().project(midiProgram));
+        MidiPlan midi = new MidiProjector().project(midiProgram);
 
         List<TrackEvent> audioEvents = new ArrayList<TrackEvent>();
         audioEvents.add(audio(0, 0, 2400, 0x45));
         NativeProgram audioProgram = compile(audioEvents, 0);
         AudioPlaybackSource audio = new AudioRenderer().preparePlayback(audioProgram);
-        PlaybackContent content = new PlaybackContent(midi, audio, midiProgram.timing, midiProgram.loop);
+        PlaybackContent content = new PlaybackContent(midi, audio, midiProgram);
         TransportTimeline timeline = TransportTimeline.from(content, 2);
-        if (!timeline.transportOwnsWholeMidiRepeat) {
-            fail("mixed whole-repeat ownership", "longer PCM did not own repeat boundary; midi="
-                    + timeline.midiDurationMicros + ", base=" + timeline.baseDurationMicros
-                    + ", audio=" + audio.getLinearDurationMicros());
-        }
         long boundary = timeline.baseDurationMicros;
-        eqLong("mixed pass index before boundary", 0L, timeline.midiWholeRepeatPass(boundary - 1L));
-        eqLong("mixed pass index at boundary", 1L, timeline.midiWholeRepeatPass(boundary));
-        if (!timeline.crossedMidiWholeRepeatBoundary(boundary + 1000L, 0L)) {
-            fail("mixed boundary transition", "pass transition was not detected");
-        }
 
-        FakeSequencer handler = new FakeSequencer();
-        Sequencer sequencer = (Sequencer) Proxy.newProxyInstance(
-                PlaybackTransportAudit.class.getClassLoader(),
-                new Class<?>[] { Sequencer.class },
-                handler);
-        handler.running = false;
-        handler.position = Math.max(0L, timeline.midiDurationMicros - 1L);
-        long pass = PlaybackSession.syncMidi(
-                sequencer, midi, timeline, boundary + 1000L, true, 0L);
-        eqLong("mixed boundary pass update", 1L, pass);
-        eqLong("mixed boundary MIDI restart position", 0L, handler.lastSetPosition);
-        eqBool("mixed boundary MIDI restarted", true, handler.started);
+        RecordingReceiver receiver = new RecordingReceiver();
+        MidiPlaybackParticipant participant = MidiPlaybackParticipant.open(
+                midi, midiProgram, timeline, receiver);
+        long eventMicros = midiProgram.timing.rawTickToMicros(1);
+        participant.sync(eventMicros);
+        int firstPassMessages = receiver.messages.size();
+        if (firstPassMessages <= 0) {
+            fail("mixed direct MIDI fixture", "first pass produced no MIDI event");
+        }
+        participant.sync(boundary + eventMicros);
+        eq("mixed direct MIDI restarts at transport pass boundary",
+                firstPassMessages * 2, receiver.messages.size());
+        participant.close();
     }
 
-    private static final class FakeSequencer implements InvocationHandler {
-        boolean running;
-        boolean started;
-        long position;
-        long lastSetPosition = -1L;
+    private static void auditNativeInfiniteDirectRepeat() throws Exception {
+        List<TrackEvent> events = new ArrayList<TrackEvent>();
+        events.add(note(0, 5, 5, 2));
+        events.add(system(1, 10, 0xDD, 0x00));
+        events.add(note(2, 15, 5, 5));
+        events.add(system(3, 20, 0xDD, 0x01));
+        NativeProgram program = compile(events, 20);
+        MidiPlan midi = new MidiProjector().project(program);
+        int introMidiNote = midiNoteAt(midi, 5);
+        int loopMidiNote = midiNoteAt(midi, 15);
+        TransportTimeline timeline = TransportTimeline.from(
+                new PlaybackContent(midi, null, program), 0);
+
+        eqLong("native parser cycle starts at proof pass",
+                20L, program.loop.infiniteRegion.parserCycleStartRawTick);
+        eqLong("native parser cycle ends at proof pass",
+                30L, program.loop.infiniteRegion.parserCycleEndRawTick);
+
+        RecordingReceiver receiver = new RecordingReceiver();
+        MidiPlaybackParticipant participant = MidiPlaybackParticipant.open(
+                midi, program, timeline, receiver);
+        long loopNotePhase = program.timing.rawTickToMicros(15)
+                - program.timing.rawTickToMicros(10);
+
+        participant.sync(timeline.loopStartMicros);
+        eq("intro note release occurs once at native loop entry",
+                1, receiver.count(ShortMessage.NOTE_OFF, introMidiNote));
+
+        participant.sync(timeline.loopStartMicros + loopNotePhase);
+        eq("first native loop note-on", 1, receiver.count(ShortMessage.NOTE_ON, loopMidiNote));
+        participant.sync(timeline.loopEndMicros);
+        eq("first native loop note-off at exact boundary", 1,
+                receiver.count(ShortMessage.NOTE_OFF, loopMidiNote));
+
+        participant.sync(timeline.loopEndMicros + loopNotePhase);
+        eq("second native loop note-on is directly scheduled", 2,
+                receiver.count(ShortMessage.NOTE_ON, loopMidiNote));
+        eq("intro carry-over release is not replayed", 1,
+                receiver.count(ShortMessage.NOTE_OFF, introMidiNote));
+        eq("native boundary injects no all-notes-off", 0,
+                receiver.countControl(123));
+
+        participant.sync(timeline.loopEndMicros + timeline.loopBodyMicros);
+        eq("second native loop note-off at exact boundary", 2,
+                receiver.count(ShortMessage.NOTE_OFF, loopMidiNote));
+        participant.sync(timeline.loopEndMicros + timeline.loopBodyMicros + loopNotePhase);
+        eq("third native loop starts without seek/chase state", 3,
+                receiver.count(ShortMessage.NOTE_ON, loopMidiNote));
+        participant.close();
+    }
+
+    private static void auditPauseResumeRestoresHeldNotes() throws Exception {
+        List<TrackEvent> events = new ArrayList<TrackEvent>();
+        events.add(note(0, 1, 1, 20));
+        NativeProgram program = compile(events, 30);
+        MidiPlan midi = new MidiProjector().project(program);
+        int midiNote = midi.notes.get(0).midiNote;
+        TransportTimeline timeline = TransportTimeline.from(
+                new PlaybackContent(midi, null, program), 0);
+        RecordingReceiver receiver = new RecordingReceiver();
+        MidiPlaybackParticipant participant = MidiPlaybackParticipant.open(
+                midi, program, timeline, receiver);
+
+        participant.sync(program.timing.rawTickToMicros(1));
+        eq("held note starts", 1, receiver.count(ShortMessage.NOTE_ON, midiNote));
+        participant.pause();
+        participant.resume();
+        eq("held note is restored after resume", 2,
+                receiver.count(ShortMessage.NOTE_ON, midiNote));
+        participant.close();
+    }
+
+    private static void auditLateNativeLoopRebuildsCurrentState() throws Exception {
+        List<TrackEvent> events = new ArrayList<TrackEvent>();
+        events.add(system(0, 10, 0xDD, 0x00));
+        events.add(note(1, 12, 1, 3));
+        events.add(system(2, 20, 0xDD, 0x01));
+        NativeProgram program = compile(events, 20);
+        MidiPlan midi = new MidiProjector().project(program);
+        TransportTimeline timeline = TransportTimeline.from(
+                new PlaybackContent(midi, null, program), 0);
+        RecordingReceiver receiver = new RecordingReceiver();
+        MidiPlaybackParticipant participant = MidiPlaybackParticipant.open(
+                midi, program, timeline, receiver);
+
+        participant.sync(60000000L);
+        if (receiver.messages.size() > 256) {
+            fail("late native recovery output",
+                    "historical native-loop events were burst to the receiver: "
+                            + receiver.messages.size());
+        }
+        participant.close();
+    }
+
+    private static final class RecordingReceiver implements Receiver {
+        final List<ShortMessage> messages = new ArrayList<ShortMessage>();
 
         @Override
-        public Object invoke(Object proxy, Method method, Object[] args) {
-            String name = method.getName();
-            if ("isRunning".equals(name)) return Boolean.valueOf(running);
-            if ("start".equals(name)) { running = true; started = true; return null; }
-            if ("stop".equals(name)) { running = false; return null; }
-            if ("setMicrosecondPosition".equals(name)) {
-                lastSetPosition = ((Long) args[0]).longValue();
-                position = lastSetPosition;
-                return null;
+        public void send(MidiMessage message, long timeStamp) {
+            if (message instanceof ShortMessage) {
+                messages.add((ShortMessage) message.clone());
             }
-            if ("getMicrosecondPosition".equals(name)) return Long.valueOf(position);
-            Class<?> type = method.getReturnType();
-            if (type == Boolean.TYPE) return Boolean.FALSE;
-            if (type == Integer.TYPE) return Integer.valueOf(0);
-            if (type == Long.TYPE) return Long.valueOf(0L);
-            if (type == Float.TYPE) return Float.valueOf(0.0f);
-            if (type == Double.TYPE) return Double.valueOf(0.0);
-            return null;
+        }
+
+        @Override
+        public void close() {
+        }
+
+        int count(int command, int note) {
+            int count = 0;
+            for (ShortMessage message : messages) {
+                if (message.getCommand() == command && message.getData1() == note) count++;
+            }
+            return count;
+        }
+
+        int countControl(int controller) {
+            int count = 0;
+            for (ShortMessage message : messages) {
+                if (message.getCommand() == ShortMessage.CONTROL_CHANGE
+                        && message.getData1() == controller) count++;
+            }
+            return count;
         }
     }
 
     private static void auditPlaybackModes() throws Exception {
         NativeProgram plain = plainProgram();
-        MidiSequenceEncoder.EncodedSequence midi = new MidiSequenceEncoder().encode(
-                new MidiProjector().project(plain));
+        MidiPlan midi = new MidiProjector().project(plain);
         eqText("MIDI mode", "host MIDI", PlaybackSession.describeMode(
-                new PlaybackContent(midi, null, plain.timing, plain.loop)));
+                new PlaybackContent(midi, null, plain)));
 
         NativeProgram audioProgram = loopProgram(true);
         AudioPlaybackSource pcm = new AudioRenderer().preparePlayback(audioProgram);
         eqText("PCM mode", "sampled PCM", PlaybackSession.describeMode(
-                new PlaybackContent(null, pcm, audioProgram.timing, audioProgram.loop)));
+                new PlaybackContent(null, pcm, audioProgram)));
         eqText("mixed mode", "mixed MIDI + PCM", PlaybackSession.describeMode(
-                new PlaybackContent(midi, pcm, audioProgram.timing, audioProgram.loop)));
+                new PlaybackContent(midi, pcm, audioProgram)));
     }
 
     private static NativeProgram loopProgram(boolean withAudio) {
@@ -276,6 +410,14 @@ public final class PlaybackTransportAudit {
             events.add(audio(1, 10, 50, 0x4D));
         }
         events.add(system(withAudio ? 2 : 1, 20, 0xDD, 0x09));
+        return compile(events, 20);
+    }
+
+    private static NativeProgram infiniteLoopProgram(boolean withAudio) {
+        List<TrackEvent> events = new ArrayList<TrackEvent>();
+        events.add(system(0, 10, 0xDD, 0x00));
+        if (withAudio) events.add(audio(1, 10, 50, 0x4D));
+        events.add(system(withAudio ? 2 : 1, 20, 0xDD, 0x01));
         return compile(events, 20);
     }
 
@@ -305,6 +447,18 @@ public final class PlaybackTransportAudit {
         return new SystemEvent(
                 0, eventIndex, 0, rawTick, command, value,
                 TrackDecoder.commandName(command), -1, -1);
+    }
+
+    private static NoteEvent note(int eventIndex, int rawTick, int gate, int pitch) {
+        return new NoteEvent(0, eventIndex, 0, rawTick, 0x05, 0, pitch, gate, 48, 0, 0);
+    }
+
+    private static int midiNoteAt(MidiPlan plan, int rawStartTick) {
+        for (MidiPlan.CompiledNote note : plan.notes) {
+            if (note.rawStartTick == rawStartTick) return note.midiNote;
+        }
+        fail("MIDI note fixture", "missing compiled note at raw tick " + rawStartTick);
+        return -1;
     }
 
     private static MachineDependentEvent audio(

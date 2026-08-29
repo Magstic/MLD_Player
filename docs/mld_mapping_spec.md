@@ -13,12 +13,12 @@ This document defines MIDI mapping for `melo` ordinary-track playback.
 - MIDI stream construction is the primary subject.
 - Native `(mode, bank, program) -> (kind, sub, value)` data remains in decoded patch state.
 - `0x7F` resource events and `0xFF` special envelopes remain in the decoded event model.
-- Transport-loop policy applies after one compiled timeline pass.
+- Finite `DD` rewinds are executed before MIDI conversion. Playback repeats an infinite `DD` cycle or, with `--loop`, the completed track.
 
 ## Time Mapping
 
 - MIDI PPQ is fixed at `1920`.
-- Raw events are processed in `(rawTick, trackIndex, eventIndex)` order.
+- Events run in per-track countdown order. Ties use track index, and events within a track keep their original order. A finite `DD` rewind may run the same source event again at a later tick.
 - Tempo seeds come from ordinary timebase events:
   - `0xC0..0xC6`
   - `0xC8..0xCE`
@@ -195,7 +195,7 @@ Patch state records retain native mode, bank, program, kind, sub, and value.
 | `D0` | conditional native stop trigger | no MIDI output |
 | `D1..DB` | empty handler | no MIDI output |
 | `DC` | next-delta high byte | parser state |
-| `DD` | four-slot native loop controller | one MIDI transport loop range |
+| `DD` | four-slot loop controller | finite rewinds or an infinite playback cycle |
 | `DE` | consumed no-op | no MIDI output |
 | `DF` | current track parser done | parser boundary |
 | `EB..EF` | empty handler | no MIDI output |
@@ -257,14 +257,22 @@ Native loop slots: `0..3`.
 - operation `2/3`: no loop action
 - a new start for one slot replaces that slot's saved start snapshot
 
-MIDI transport exposes one loop range. The bridge selects the lowest numbered
-complete slot in the linear pass. Additional complete slots remain in decoded
-loop state.
+The compiler applies all four slots before MIDI conversion:
 
-Zero-duration DD behavior is compiled as a native track-event stop boundary.
-Later track events, including higher-track events at the same raw tick, are
-excluded. Active gate expiries retain their scheduled native timing under the
-timing state established at that boundary.
+- start saves every track's position after the start command
+- end restores those positions while its counter is nonzero
+- after a finite loop finishes, execution continues after the end command
+- sequential, nested, and crossing slots are all applied
+
+Infinite playback starts when the parser state repeats. Every pass runs the recurring events again, so relative tempo, melody, and audio changes carry into later passes. The pass used to detect repetition is not added again.
+
+After a long stall, MIDI skips expired messages and restores the controllers and notes that should currently be active.
+
+Sampled audio repeats only when the next pass has the same state, duration, and audio actions. Otherwise sampled-audio playback is rejected.
+
+`--loop` repeats the completed track without changing native DD counters.
+
+A zero-duration `DD` end stops every track. Later events, including higher-track events at the same tick, are excluded. Active notes still end using the timing at that boundary.
 
 ## Live-Mix Chase Approximation
 

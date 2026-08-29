@@ -29,14 +29,7 @@ public final class MidiPlanSegmenter {
         List<MidiPlan.CompiledNote> notes = sliceNotes(source, segmentStart, segmentEnd);
 
         MidiPlan.LoopInfo noLoop = new MidiPlan.LoopInfo(
-                false,
-                -1,
-                0,
-                -1,
-                -1,
-                -1L,
-                -1L,
-                source.loopInfo.warnings);
+                false, -1, -1, -1, -1L, -1L, source.loopInfo.warnings);
         return new MidiPlan(
                 tempoPoints,
                 noLoop,
@@ -103,7 +96,7 @@ public final class MidiPlanSegmenter {
         List<MidiPlan.MappedControlEvent> result = new ArrayList<MidiPlan.MappedControlEvent>();
         for (int index = 0; index < primed.size(); index++) {
             MidiPlan.MappedControlEvent control = primed.get(index);
-            result.add(MidiLoopMaterializer.copyControl(
+            result.add(copyControl(
                     control,
                     0L,
                     Integer.MIN_VALUE + index));
@@ -120,7 +113,7 @@ public final class MidiPlanSegmenter {
             if (control.midiTick < segmentStart || control.midiTick >= segmentEnd) {
                 continue;
             }
-            result.add(MidiLoopMaterializer.copyControl(
+            result.add(copyControl(
                     control,
                     control.midiTick - segmentStart,
                     control.order));
@@ -142,11 +135,30 @@ public final class MidiPlanSegmenter {
             if (localEnd <= localStart) {
                 localEnd = localStart + 1L;
             }
-            result.add(MidiLoopMaterializer.copyNote(note, localStart, localEnd));
+            result.add(copyNote(note, localStart, localEnd));
         }
         return result;
     }
 
+
+    private static MidiPlan.MappedControlEvent copyControl(
+            MidiPlan.MappedControlEvent source, long midiTick, int order) {
+        return new MidiPlan.MappedControlEvent(
+                source.sourceTrack, source.sourceCommand, source.sourceName, source.rawTick,
+                source.midiChannel, source.logicalChannel, source.midiTrackIndex, midiTick,
+                source.status, source.data1, source.data2, source.patchWord, source.rawPatchWord,
+                source.latePatchEntry, source.patchSource, source.nativeMode, source.nativeBank,
+                source.nativeProgram, source.nativeKind, source.nativeSub, source.nativeValue,
+                source.hostMapping, source.hostMappingProxy, source.sourceOrder, order);
+    }
+
+    private static MidiPlan.CompiledNote copyNote(
+            MidiPlan.CompiledNote source, long midiStartTick, long midiEndTick) {
+        return new MidiPlan.CompiledNote(
+                source.sourceTrack, source.sourceVoice, source.logicalChannel, source.midiChannel,
+                source.midiTrackIndex, source.midiNote, source.velocity, source.rawStartTick,
+                source.rawEndTick, midiStartTick, midiEndTick);
+    }
     private static String controlKey(MidiPlan.MappedControlEvent control) {
         if (control.status == ShortMessage.CONTROL_CHANGE) {
             return control.midiChannel + ":cc:" + control.data1;

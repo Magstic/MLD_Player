@@ -37,7 +37,7 @@ Java 8, and Double-click the JAR!
 ```
 java -jar mld-player.jar <file.mld>
 java -jar mld-player.jar <file.mld> --output <dir>       AUTO export to <dir>/MFiExport
-java -jar mld-player.jar <file.mld> --loop [n|infinite]  override loop count
+java -jar mld-player.jar <file.mld> --loop [n|infinite]  repeat the completed track
 ```
 
 
@@ -66,9 +66,9 @@ ant
 
 ## Known Gaps
 
-- Sampled-audio rendering supports these verified profiles: machine-dependent `71:84` 4-bit; ordinary active-`adat` selector `0x81`, 4-bit route 0; and compact `0x8002` 4-bit AWC2 with native-valid payload lengths at 4/8/16/32 kHz, mono or stereo.
-- `0x8000`, `0x8001` 2-bit, non-standard `0x8002` source rates, `0x8003`, `71:86`, and sampled routes `2..9` remain fail-closed.
-- Proprietary MFi synthesizer backend requests remain typed semantic evidence outside host MIDI rendering.
+- Support: `71:84` (4-bit), `0x81` (4-bit, route 0), and `0x8002` (4-bit AWC2) at 4, 8, 16, or 32 kHz in mono or stereo.
+- Unsupported: `0x8000`, `0x8001` (2-bit), other `0x8002` sample rates, `0x8003`, `71:86`, and routes 2 through 9.
+- Proprietary MFi synthesizer audio is handled separately and is not processed by the standard MIDI player.
 
 ---
 

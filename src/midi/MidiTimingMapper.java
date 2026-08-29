@@ -31,17 +31,18 @@ final class MidiTimingMapper {
     }
 
     MidiPlan.LoopInfo projectLoop(LoopModel l) {
-        if (!l.hasLoop) {
-            return new MidiPlan.LoopInfo(false, -1, 0, -1, -1, -1, -1, l.warnings);
+        if (l == null || !l.hasInfiniteLoop()) {
+            return new MidiPlan.LoopInfo(false, -1, -1, -1, -1L, -1L,
+                    l == null ? java.util.Collections.<String>emptyList() : l.warnings);
         }
+        LoopModel.InfiniteRegion r = l.infiniteRegion;
         return new MidiPlan.LoopInfo(
                 true,
-                l.loopSlot,
-                l.repeatCount,
-                l.loopStartRawTick,
-                l.loopEndRawTick,
-                rawToMidiTick(l.loopStartRawTick),
-                rawToMidiTick(l.loopEndRawTick),
+                r.slot,
+                r.loopStartRawTick,
+                r.loopEndRawTick,
+                rawToMidiTick(r.loopStartRawTick),
+                rawToMidiTick(r.loopEndRawTick),
                 l.warnings);
     }
 

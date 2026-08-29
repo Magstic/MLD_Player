@@ -5,12 +5,16 @@ src/
   mld/format/   MldReader, MldDocument   — melo container parsing
   mld/decode/   TrackDecoder, MachineDescriptorMatcher — event decoding + shared MD descriptor matching
   mld/semantic/ NativeCompiler           — native MLD semantic compilation
-                TimingModel              — native timing + DD loop state
+                NativeEventScheduler     — track ordering + four-slot DD rewinds
+                NativeLoopPlan/Runtime   — repeated DD events with carried state
+                LoopModel                — DD starts, rewinds, and infinite range
+                TimingModel              — timing for executed events
                 MelodyProgram            — note/system native state
                 AudioProgram             — typed resource/machine audio semantics
                 Diagnostic               — structured unsupported/unresolved evidence
   midi/         MidiProjector, MidiPlan  — host MIDI projection
-                MidiLoopMaterializer      — bounded playback loop plan expansion
+                MidiLiveProjector         — repeated DD events -> MIDI
+                MidiPlanSegmenter         — export slicing for native infinite intro/cycle
                 MidiSequenceEncoder       — sole MidiPlan -> Sequence serializer
   audio/        MfiG726Decoder            — verified 4-bit G.721/G.726 core
                 Mfi8001Decoder            — exact 0x8001 codec/output pipeline
@@ -21,7 +25,8 @@ src/
                 AudioPcmTimeline          — loop-aware PCM overlap-add source
   normalize/    MdNormalizer             — machine-dependent forensic normalization
   playback/     PlaybackSession          — shared MIDI/PCM transport lifecycle
-                PlaybackContent          — immutable session participants + native timing
+                MidiPlaybackParticipant  — MIDI scheduling, pause/resume, and late recovery
+                PlaybackContent          — MIDI, audio, and NativeProgram inputs
                 TransportTimeline        — shared microsecond clock/loop policy
                 PcmPlaybackParticipant   — PCM transport follower
                 PcmOutputConnection      — Java Sound output + latency policy

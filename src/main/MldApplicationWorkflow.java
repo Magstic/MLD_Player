@@ -4,14 +4,10 @@ import java.io.IOException;
 import java.nio.file.Path;
 import java.util.List;
 
-import javax.sound.midi.InvalidMidiDataException;
-
 import audio.AudioPlaybackSource;
 import audio.AudioRenderer;
-import midi.MidiLoopMaterializer;
 import midi.MidiPlan;
 import midi.MidiProjector;
-import midi.MidiSequenceEncoder;
 import mld.decode.DecodedTrack;
 import mld.decode.TrackDecoder;
 import mld.format.MldDocument;
@@ -26,8 +22,6 @@ final class MldApplicationWorkflow {
     private final TrackDecoder decoder = new TrackDecoder();
     private final NativeCompiler compiler = new NativeCompiler();
     private final MidiProjector midiProjector = new MidiProjector();
-    private final MidiLoopMaterializer loopMaterializer = new MidiLoopMaterializer();
-    private final MidiSequenceEncoder sequenceEncoder = new MidiSequenceEncoder();
     private final AudioRenderer audioRenderer = new AudioRenderer();
 
     ApplicationTrack load(Path inputPath) throws IOException {
@@ -58,19 +52,17 @@ final class MldApplicationWorkflow {
                 renderableAudio);
     }
 
-    PlaybackContent preparePlayback(ApplicationTrack track, int loopCount) throws InvalidMidiDataException {
+    PlaybackContent preparePlayback(ApplicationTrack track) {
         if (track == null) {
             throw new IllegalArgumentException("Loaded track is required.");
-        }
-        MidiSequenceEncoder.EncodedSequence sequence = null;
-        if (track.hasMidi()) {
-            MidiPlan playbackPlan = loopMaterializer.materializeFiniteLoop(track.midi, loopCount);
-            sequence = sequenceEncoder.encode(playbackPlan);
         }
         AudioPlaybackSource pcm = track.renderableAudio
                 ? audioRenderer.preparePlayback(track.program)
                 : null;
-        return new PlaybackContent(sequence, pcm, track.program.timing, track.program.loop);
+        return new PlaybackContent(
+                track.hasMidi() ? track.midi : null,
+                pcm,
+                track.program);
     }
 
     static String cleanInfoText(String value) {

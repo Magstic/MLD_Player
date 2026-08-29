@@ -17,7 +17,7 @@ public final class MidiSerializationAudit {
 
     public static void main(String[] args) throws Exception {
         auditSameTickOrdering();
-        auditFiniteLoopMaterialization();
+        auditInfiniteLoopEncodingBoundary();
         auditSegmentPrimingAndClipping();
         System.out.println("MidiSerializationAudit: PASS");
     }
@@ -44,43 +44,23 @@ public final class MidiSerializationAudit {
         eq("note-on phase", ShortMessage.NOTE_ON, messages.get(3).getCommand());
     }
 
-    private static void auditFiniteLoopMaterialization() throws Exception {
+    private static void auditInfiniteLoopEncodingBoundary() throws Exception {
         MidiPlan.LoopInfo loop = new MidiPlan.LoopInfo(
-                true, 0, 2, 10, 20, 100L, 200L, Collections.<String>emptyList());
+                true, 0, 10, 20, 100L, 200L, Collections.<String>emptyList());
         List<MidiPlan.TempoPoint> tempos = tempos(
                 tempo(0L, 500000),
-                tempo(50L, 480000),
                 tempo(120L, 460000),
-                tempo(180L, 440000),
-                tempo(220L, 420000));
+                tempo(180L, 440000));
         List<MidiPlan.CompiledNote> notes = new ArrayList<MidiPlan.CompiledNote>();
         notes.add(note(60, 80L, 150L, 0, 0));
         notes.add(note(62, 150L, 220L, 0, 1));
-        notes.add(note(64, 210L, 230L, 0, 2));
-        List<MidiPlan.MappedControlEvent> controls = new ArrayList<MidiPlan.MappedControlEvent>();
-        controls.add(control(ShortMessage.CONTROL_CHANGE, 7, 90, 50L, 0));
-        controls.add(control(ShortMessage.CONTROL_CHANGE, 10, 64, 130L, 1));
-        controls.add(control(ShortMessage.CONTROL_CHANGE, 1, 20, 210L, 2));
+        MidiPlan source = plan(loop, tempos, notes,
+                Collections.<MidiPlan.MappedControlEvent>emptyList(), 230L);
 
-        MidiPlan source = plan(loop, tempos, notes, controls, 230L);
-        MidiPlan materialized = new MidiLoopMaterializer().materializeFiniteLoop(source, 2);
-
-        if (!materialized.loopInfo.materializedLoopPasses) {
-            fail("materialized flag", "finite loop plan was not marked materialized");
-        }
-        eq("materialized passes", 3, materialized.loopInfo.totalLoopPasses);
-        eq("materialized note count", 4, materialized.notes.size());
-        eq("materialized control count", 4, materialized.mappedControls.size());
-        eqLong("cross-boundary pass 1 end", 220L, materialized.notes.get(1).midiEndTick);
-        eqLong("cross-boundary pass 2 end", 320L, materialized.notes.get(2).midiEndTick);
-        eqLong("cross-boundary pass 3 end", 420L, materialized.notes.get(3).midiEndTick);
-        eqLong("materialized content end", 420L, materialized.totalMidiTicks);
-
-        MidiSequenceEncoder.EncodedSequence encoded = new MidiSequenceEncoder().encode(materialized);
-        eqLong("encoded materialized end", 420L, encoded.contentEndTick);
-        eqLong("encoded EOT", 421L, endOfTrackTick(encoded.sequence.getTracks()[0]));
+        MidiSequenceEncoder.EncodedSequence encoded = new MidiSequenceEncoder().encode(source);
+        eqLong("native infinite encoded boundary", 200L, encoded.contentEndTick);
+        eqLong("native infinite EOT", 201L, endOfTrackTick(encoded.sequence.getTracks()[0]));
     }
-
 
     private static void auditSegmentPrimingAndClipping() throws Exception {
         List<MidiPlan.TempoPoint> tempos = tempos(
@@ -131,7 +111,7 @@ public final class MidiSerializationAudit {
     }
 
     private static MidiPlan.LoopInfo noLoop() {
-        return new MidiPlan.LoopInfo(false, -1, 0, -1, -1, -1L, -1L, Collections.<String>emptyList());
+        return new MidiPlan.LoopInfo(false, -1, -1, -1, -1L, -1L, Collections.<String>emptyList());
     }
 
     private static MidiPlan.TempoPoint tempo(long midiTick, int mpqn) {

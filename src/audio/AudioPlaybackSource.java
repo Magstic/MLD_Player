@@ -76,7 +76,7 @@ public final class AudioPlaybackSource {
         return new AudioPcmTimeline(
                 sampleRate,
                 voices,
-                loop != null && loop.hasLoop,
+                loop != null && loop.hasInfiniteLoop(),
                 loopStartMicros,
                 loopEndMicros,
                 requestedLoopCount,

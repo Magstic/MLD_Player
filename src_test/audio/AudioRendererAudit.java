@@ -1131,14 +1131,17 @@ public final class AudioRendererAudit {
         short[] baselinePcm = baseline.copyInterleavedPcm16();
         short[] actualPcm = actual.copyInterleavedPcm16();
         boolean baselineSignal = false;
-        int endFrame = Math.min(baseline.getFrameCount(), actual.getFrameCount());
+        int endFrame = baseline.getFrameCount();
         for (int frame = firstFrame; frame < endFrame; frame++) {
             int sample = frame * 2;
             if (baselinePcm[sample] != 0 || baselinePcm[sample + 1] != 0) {
                 baselineSignal = true;
             }
-            if (actualPcm[sample] != 0 || actualPcm[sample + 1] != 0) {
-                fail(name, "nonzero sample at frame " + frame);
+            if (frame < actual.getFrameCount()) {
+                int actualSample = frame * 2;
+                if (actualPcm[actualSample] != 0 || actualPcm[actualSample + 1] != 0) {
+                    fail(name, "nonzero sample at frame " + frame);
+                }
             }
         }
         if (!baselineSignal) fail(name + " baseline", "fixture has no post-control signal");

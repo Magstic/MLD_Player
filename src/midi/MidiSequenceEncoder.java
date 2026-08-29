@@ -52,7 +52,7 @@ public final class MidiSequenceEncoder {
     }
 
     private static long contentEndTick(MidiPlan plan) {
-        if (plan.loopInfo.hasLoop && !plan.loopInfo.materializedLoopPasses) {
+        if (plan.loopInfo.hasLoop) {
             return Math.max(1L, plan.loopInfo.loopEndMidiTick);
         }
         return Math.max(1L, plan.totalMidiTicks);
@@ -261,22 +261,18 @@ public final class MidiSequenceEncoder {
         public final Sequence sequence;
         public final MidiPlan plan;
         public final boolean hasLoop;
-        public final boolean materializedLoopPasses;
         public final long loopStartTick;
         public final long loopEndTick;
         public final long loopBodyTickLength;
-        public final int totalLoopPasses;
         public final long contentEndTick;
 
         private EncodedSequence(Sequence sequence, MidiPlan plan, long contentEndTick) {
             this.sequence = sequence;
             this.plan = plan;
             this.hasLoop = plan.loopInfo.hasLoop;
-            this.materializedLoopPasses = plan.loopInfo.materializedLoopPasses;
             this.loopStartTick = plan.loopInfo.loopStartMidiTick;
             this.loopEndTick = plan.loopInfo.loopEndMidiTick;
             this.loopBodyTickLength = plan.loopInfo.loopBodyTickLength();
-            this.totalLoopPasses = plan.loopInfo.totalLoopPasses;
             this.contentEndTick = contentEndTick;
         }
     }

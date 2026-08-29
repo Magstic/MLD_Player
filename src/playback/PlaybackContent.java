@@ -1,33 +1,28 @@
 package playback;
 
 import audio.AudioPlaybackSource;
-import midi.MidiSequenceEncoder;
-import mld.semantic.LoopModel;
-import mld.semantic.TimingModel;
+import midi.MidiPlan;
+import mld.semantic.NativeProgram;
 
 /** Immutable media participants and native timing needed by one shared playback session. */
 public final class PlaybackContent {
-    public final MidiSequenceEncoder.EncodedSequence midi;
+    public final MidiPlan midi;
     public final AudioPlaybackSource audio;
-    public final TimingModel timing;
-    public final LoopModel loop;
+    public final NativeProgram program;
 
     public PlaybackContent(
-            MidiSequenceEncoder.EncodedSequence midi,
+            MidiPlan midi,
             AudioPlaybackSource audio,
-            TimingModel timing,
-            LoopModel loop) {
+            NativeProgram program) {
         if (midi == null && audio == null) {
             throw new IllegalArgumentException("Playback content requires MIDI or sampled audio.");
         }
-        if (audio != null && (timing == null || loop == null)) {
-            throw new IllegalArgumentException(
-                    "Sampled-audio playback requires native timing and loop models.");
+        if (program == null) {
+            throw new IllegalArgumentException("Playback requires the native semantic program.");
         }
         this.midi = midi;
         this.audio = audio;
-        this.timing = timing;
-        this.loop = loop;
+        this.program = program;
     }
 
     public boolean hasMidi() {

@@ -15,7 +15,6 @@ import java.util.zip.ZipOutputStream;
 
 import javax.sound.midi.MidiSystem;
 
-import midi.MidiLoopMaterializer;
 import midi.MidiPlan;
 import midi.MidiProjector;
 import midi.MidiSequenceEncoder;
@@ -60,14 +59,13 @@ public final class ApplicationCompositionAudit {
             eq("display copyright", "Round10", track.displayCopyright());
             eq("duration helper", MldApplicationWorkflow.estimateDurationMillis(track.midi), track.durationMillis);
 
-            PlaybackContent content = workflow.preparePlayback(track, 0);
+            PlaybackContent content = workflow.preparePlayback(track);
             yes("playback MIDI participant", content.hasMidi());
             no("playback PCM participant", content.hasPcm());
 
             DirectResult direct = directCompile(input);
-            byte[] workflowMidi = midiBytes(content.midi);
-            byte[] directMidi = midiBytes(new MidiSequenceEncoder().encode(
-                    new MidiLoopMaterializer().materializeFiniteLoop(direct.midi, 0)));
+            byte[] workflowMidi = midiBytes(new MidiSequenceEncoder().encode(content.midi));
+            byte[] directMidi = midiBytes(new MidiSequenceEncoder().encode(direct.midi));
             bytes("shared workflow MIDI serialization", directMidi, workflowMidi);
             eq("direct native notes", direct.program.melody.notes.size(), track.program.melody.notes.size());
         } finally {

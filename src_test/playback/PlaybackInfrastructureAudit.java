@@ -1,19 +1,12 @@
 package playback;
 
-import java.lang.reflect.InvocationHandler;
-import java.lang.reflect.Method;
-import java.lang.reflect.Proxy;
 import java.util.ArrayList;
-import java.util.Collections;
 import java.util.List;
 
 import javax.sound.midi.MidiMessage;
 import javax.sound.midi.Receiver;
-import javax.sound.midi.Sequencer;
 import javax.sound.midi.ShortMessage;
 
-import midi.MidiPlan;
-import midi.MidiSequenceEncoder;
 
 /** Regression audit for pure MIDI playback infrastructure behavior. */
 public final class PlaybackInfrastructureAudit {
@@ -24,7 +17,6 @@ public final class PlaybackInfrastructureAudit {
         auditMasterVolumeScaling();
         auditPcmMasterVolumeScaling();
         auditFluidSynthProtocol();
-        auditSequencerLoopConfiguration();
         System.out.println("PlaybackInfrastructureAudit: PASS");
     }
 
@@ -125,75 +117,6 @@ public final class PlaybackInfrastructureAudit {
         eqText("gain full", "gain 0.2000", FluidSynthBackend.gainCommand(127));
     }
 
-    private static void auditSequencerLoopConfiguration() throws Exception {
-        LoopRecorder recorder = new LoopRecorder();
-        Sequencer sequencer = recorder.proxy();
-        PlaybackSession.configureMidiLooping(
-                sequencer,
-                encoded(true, false, -1, 20L, 60L, 100L),
-                -1);
-        eqLong("native loop start", 20L, recorder.loopStart);
-        eqLong("native loop end", 60L, recorder.loopEnd);
-        eq("native loop count", Sequencer.LOOP_CONTINUOUSLY, recorder.loopCount);
-
-        recorder.reset();
-        PlaybackSession.configureMidiLooping(
-                sequencer,
-                encoded(false, false, -1, 0L, 0L, 100L),
-                2);
-        eqLong("whole pass start", 0L, recorder.loopStart);
-        eqLong("whole pass end", 100L, recorder.loopEnd);
-        eq("whole pass count", 2, recorder.loopCount);
-
-        recorder.reset();
-        PlaybackSession.configureMidiLooping(
-                sequencer,
-                encoded(true, true, 3, 20L, 60L, 140L),
-                2);
-        eq("materialized loop disabled", 0, recorder.loopCount);
-        eqLong("materialized loop start untouched", Long.MIN_VALUE, recorder.loopStart);
-        eqLong("materialized loop end untouched", Long.MIN_VALUE, recorder.loopEnd);
-
-        recorder.reset();
-        PlaybackSession.configureMidiLooping(
-                sequencer,
-                encoded(false, false, -1, 0L, 0L, 100L),
-                2,
-                true);
-        eq("mixed whole-program loop is transport-owned", 0, recorder.loopCount);
-        eqLong("mixed whole-program start untouched", Long.MIN_VALUE, recorder.loopStart);
-        eqLong("mixed whole-program end untouched", Long.MIN_VALUE, recorder.loopEnd);
-    }
-
-    private static MidiSequenceEncoder.EncodedSequence encoded(
-            boolean hasLoop,
-            boolean materialized,
-            int totalLoopPasses,
-            long loopStart,
-            long loopEnd,
-            long totalTicks) throws Exception {
-        MidiPlan plan = new MidiPlan(
-                Collections.singletonList(new MidiPlan.TempoPoint(0, 0L, 48, 125, 480000, false)),
-                new MidiPlan.LoopInfo(
-                        hasLoop,
-                        hasLoop ? 0 : -1,
-                        hasLoop ? -1 : 0,
-                        hasLoop ? 0 : -1,
-                        hasLoop ? 1 : -1,
-                        hasLoop ? loopStart : -1L,
-                        hasLoop ? loopEnd : -1L,
-                        materialized,
-                        totalLoopPasses,
-                        Collections.<String>emptyList()),
-                Collections.<MidiPlan.ChannelAssignment>emptyList(),
-                Collections.<MidiPlan.OutputLaneAudit>emptyList(),
-                Collections.<MidiPlan.CompiledNote>emptyList(),
-                Collections.<MidiPlan.MappedControlEvent>emptyList(),
-                totalTicks,
-                Collections.<String>emptyList());
-        return new MidiSequenceEncoder().encode(plan);
-    }
-
     private static ShortMessage shortMessage(int command, int channel, int data1, int data2) throws Exception {
         ShortMessage message = new ShortMessage();
         message.setMessage(command, channel, data1, data2);
@@ -221,49 +144,6 @@ public final class PlaybackInfrastructureAudit {
     private static void eqText(String label, String expected, String actual) {
         if (expected == null ? actual != null : !expected.equals(actual)) {
             throw new AssertionError(label + ": expected " + expected + ", got " + actual);
-        }
-    }
-
-    private static final class LoopRecorder implements InvocationHandler {
-        long loopStart = Long.MIN_VALUE;
-        long loopEnd = Long.MIN_VALUE;
-        int loopCount = Integer.MIN_VALUE;
-
-        Sequencer proxy() {
-            return (Sequencer) Proxy.newProxyInstance(
-                    Sequencer.class.getClassLoader(),
-                    new Class<?>[] {Sequencer.class},
-                    this);
-        }
-
-        void reset() {
-            loopStart = Long.MIN_VALUE;
-            loopEnd = Long.MIN_VALUE;
-            loopCount = Integer.MIN_VALUE;
-        }
-
-        @Override
-        public Object invoke(Object proxy, Method method, Object[] args) {
-            String name = method.getName();
-            if ("setLoopStartPoint".equals(name)) {
-                loopStart = ((Long) args[0]).longValue();
-                return null;
-            }
-            if ("setLoopEndPoint".equals(name)) {
-                loopEnd = ((Long) args[0]).longValue();
-                return null;
-            }
-            if ("setLoopCount".equals(name)) {
-                loopCount = ((Integer) args[0]).intValue();
-                return null;
-            }
-            Class<?> type = method.getReturnType();
-            if (type == Boolean.TYPE) return Boolean.FALSE;
-            if (type == Integer.TYPE) return Integer.valueOf(0);
-            if (type == Long.TYPE) return Long.valueOf(0L);
-            if (type == Float.TYPE) return Float.valueOf(0.0f);
-            if (type == Double.TYPE) return Double.valueOf(0.0);
-            return null;
         }
     }
 

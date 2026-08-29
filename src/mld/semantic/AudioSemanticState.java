@@ -241,6 +241,73 @@ final class AudioSemanticState {
                 diagnostics);
     }
 
+    AudioProgram drain() {
+        AudioProgram result = finish();
+        resourceEvents.clear();
+        actions.clear();
+        diagnostics.clear();
+        return result;
+    }
+
+    String runtimeFingerprint() {
+        StringBuilder out = new StringBuilder();
+        out.append(masterVolume).append(',')
+                .append(resourceLevel).append(',')
+                .append(resourcePan).append('|');
+        for (Map.Entry<Integer, MutableChannelState> entry : channels.entrySet()) {
+            MutableChannelState state = entry.getValue();
+            out.append(entry.getKey()).append(':')
+                    .append(state.levelKnown ? 1 : 0).append(',')
+                    .append(state.level).append(',')
+                    .append(state.levelPhaseGated ? 1 : 0).append(',')
+                    .append(state.panKnown ? 1 : 0).append(',')
+                    .append(state.pan).append(',')
+                    .append(state.panPhaseGated ? 1 : 0).append(',')
+                    .append(state.routeKnown ? 1 : 0).append(',')
+                    .append(state.route).append(';');
+        }
+        out.append('|');
+        for (Map.Entry<Integer, MutableSlotState> entry : slots.entrySet()) {
+            MutableSlotState state = entry.getValue();
+            AudioProgram.AudioAction action = state.action;
+            out.append(entry.getKey()).append(':')
+                    .append(action.kind).append(',')
+                    .append(action.cacheAware ? 1 : 0).append(',')
+                    .append(action.audioType).append(',')
+                    .append(action.formatCode).append(',')
+                    .append(action.sampleRate).append(',')
+                    .append(action.codedBits).append(',')
+                    .append(action.channelCount).append(',')
+                    .append(action.controlFlag).append(',')
+                    .append(action.durationByteCount).append(',')
+                    .append(action.durationMs).append(',')
+                    .append(java.util.Base64.getEncoder().encodeToString(state.encodedPayload))
+                    .append(';');
+        }
+        out.append('|');
+        for (Map.Entry<Integer, SharedSlotCache> entry : sharedSlotCaches.entrySet()) {
+            SharedSlotCache state = entry.getValue();
+            out.append(entry.getKey()).append(':')
+                    .append(state.pending ? 1 : 0).append(',')
+                    .append(state.operation).append(',')
+                    .append(state.formatCode).append(',')
+                    .append(state.logicalChannel).append(',')
+                    .append(state.durationMs).append(';');
+        }
+        out.append('|');
+        for (Map.Entry<String, MutableConfigBinding> entry : configs.entrySet()) {
+            MutableConfigBinding state = entry.getValue();
+            out.append(entry.getKey()).append(':')
+                    .append(state.selector).append(',')
+                    .append(state.clearWhenOutOfRange ? 1 : 0).append(';');
+        }
+        out.append('|');
+        for (int value : routeFlags) out.append(value).append(',');
+        out.append('|');
+        for (int value : routeClasses) out.append(value).append(',');
+        return out.toString();
+    }
+
     private AudioProgram.AudioAction resourceAction(
             ResourceEvent event,
             AudioProgram.ResourceEventState state,

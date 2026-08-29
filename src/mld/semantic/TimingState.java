@@ -5,25 +5,13 @@ import java.util.Collections;
 import java.util.Comparator;
 import java.util.List;
 
-import mld.decode.DecodedTrack;
 import mld.decode.SystemEvent;
 import mld.decode.TrackEvent;
 
-/**
- * Native event ordering, tempo/timebase state, and DD loop semantics.
- */
+/** Tempo/timebase state for the already scheduled native execution timeline. */
 final class TimingState {
     private static final int MIN_TEMPO = 20;
     private static final int MAX_TEMPO = 255;
-    static final Comparator<TrackEvent> EVENT_ORDER = new Comparator<TrackEvent>(){
-
-        public int compare(TrackEvent a, TrackEvent b) {
-            int x = Integer.compare(a.rawTick, b.rawTick);
-            if (x != 0) return x;
-            x = Integer.compare(a.trackIndex, b.trackIndex);
-            return x != 0 ? x : Integer.compare(a.eventIndex, b.eventIndex);
-        }
-    };
     private static final Comparator<RawTimingPoint> TIMING_ORDER = new Comparator<RawTimingPoint>(){
 
         public int compare(RawTimingPoint a, RawTimingPoint b) {
@@ -37,14 +25,11 @@ final class TimingState {
     private TimingState() {
     }
 
-    static Analysis analyze(List<DecodedTrack> tracks, List<String> warnings) {
-        List<TrackEvent> events = orderedEvents(tracks);
-        SystemEvent stop = findNativeZeroDurationLoopStop(events);
-        List<RawTimingPoint> seeds = collectTimingSeeds(events, stop);
+    static Analysis analyze(List<TrackEvent> events, List<String> warnings) {
+        List<RawTimingPoint> seeds = collectTimingSeeds(events);
         Collections.sort(seeds, TIMING_ORDER);
         TimingModel timing = new TimingModel(buildTimingPoints(seeds, warnings));
-        LoopModel loop = determineLoopInfo(events, warnings, stop);
-        return new Analysis(events, stop, timing, loop);
+        return new Analysis(events, timing);
     }
 
     static Runtime newRuntime() {
@@ -78,19 +63,11 @@ final class TimingState {
         return e.command == 0xBF;
     }
 
-    private static List<TrackEvent> orderedEvents(List<DecodedTrack> tracks) {
-        List<TrackEvent> r = new ArrayList<TrackEvent>();
-        for (DecodedTrack t : tracks) r.addAll(t.events);
-        Collections.sort(r, EVENT_ORDER);
-        return r;
-    }
-
-    private static List<RawTimingPoint> collectTimingSeeds(List<TrackEvent> events, SystemEvent stop) {
+    private static List<RawTimingPoint> collectTimingSeeds(List<TrackEvent> events) {
         List<RawTimingPoint> r = new ArrayList<RawTimingPoint>();
         int tb = 48;
         int tp = 125;
         for (TrackEvent e : events) {
-            if (stop != null && EVENT_ORDER.compare(e, stop) > 0) break;
             if (!(e instanceof SystemEvent)) continue;
             SystemEvent s = (SystemEvent)e;
             if (!isEffectiveTimingEvent(s)) continue;
@@ -120,72 +97,17 @@ final class TimingState {
         return r;
     }
 
-    private static SystemEvent findNativeZeroDurationLoopStop(List<TrackEvent> events) {
-        Integer[] start = new Integer[4];
-        for (TrackEvent e : events) {
-            if (!(e instanceof SystemEvent)) continue;
-            SystemEvent s = (SystemEvent)e;
-            if (s.command != 0xDD || s.trackIndex != 0) continue;
-            int slot = (s.value >> 6) & 3;
-            int op = s.value & 3;
-            if (op == 0) start[slot] = s.rawTick; else if (op == 1 && start[slot] != null) {
-                if (start[slot].intValue() == s.rawTick) return s;
-                start[slot] = null;
-            }
-        }
-        return null;
-    }
-
-    private static LoopModel determineLoopInfo(List<TrackEvent> events, List<String> warnings, SystemEvent stop) {
-        Integer[] active = new Integer[4];
-        Integer[] starts = new Integer[4];
-        Integer[] ends = new Integer[4];
-        int[] repeats = new int[4];
-        List<String> lw = new ArrayList<String>();
-        for (TrackEvent e : events) {
-            if (stop != null && EVENT_ORDER.compare(e, stop) > 0) break;
-            if (!(e instanceof SystemEvent)) continue;
-            SystemEvent s = (SystemEvent)e;
-            if (s.command != 0xDD || s.trackIndex != 0) continue;
-            int slot = (s.value >> 6) & 3;
-            int op = s.value & 3;
-            if (op == 0) active[slot] = s.rawTick; else if (op == 1 && active[slot] != null && ends[slot] == null) {
-                starts[slot] = active[slot];
-                ends[slot] = s.rawTick;
-                int rep = (s.value >> 2) & 15;
-                repeats[slot] = rep == 0 ? -1 : rep;
-            }
-        }
-        if (stop != null) lw.add("Zero-duration DD loop end marks every native track parser context done at raw tick " + stop.rawTick + ".");
-        int chosen = -1;
-        for (int slot = 0; slot < 4; slot++) {
-            if (starts[slot] != null && ends[slot] != null && ends[slot] > starts[slot]) {
-                if (chosen >= 0) {
-                    lw.add("Multiple complete DD loop slots detected; host transport uses the lowest numbered slot.");
-                    break;
-                }
-                chosen = slot;
-            } else if ((starts[slot] == null) != (ends[slot] == null)) lw.add("DD loop slot " + slot + " is incomplete in the linear host pass.");
-        }
-        warnings.addAll(lw);
-        return chosen < 0 ? new LoopModel(false, -1, 0, -1, -1, lw) : new LoopModel(true, chosen, repeats[chosen], starts[chosen], ends[chosen], lw);
-    }
-
     private static int clamp(int min, int max, int v) {
         return Math.max(min, Math.min(max, v));
     }
 
     static final class Analysis {
-        final List<TrackEvent> orderedEvents;
-        final SystemEvent stopEvent;
+        final List<TrackEvent> events;
         final TimingModel timing;
-        final LoopModel loop;
 
-        Analysis(List<TrackEvent> e, SystemEvent s, TimingModel t, LoopModel l) {
-            orderedEvents = e;
-            stopEvent = s;
-            timing = t;
-            loop = l;
+        Analysis(List<TrackEvent> events, TimingModel timing) {
+            this.events = events;
+            this.timing = timing;
         }
     }
 

@@ -519,7 +519,7 @@ final class SwingPlayerController implements SwingPlayerView.Listener {
                     }
                 };
                 int loopCount = playlist.loopMode() == PlaylistState.LoopMode.PLAYLIST ? 0 : -1;
-                PlaybackContent content = workflow.preparePlayback(track, loopCount);
+                PlaybackContent content = workflow.preparePlayback(track);
                 completed = new PlaybackSession().play(
                         content,
                         loopCount,

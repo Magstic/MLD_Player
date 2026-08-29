@@ -8,6 +8,7 @@ import java.util.Map;
 import java.util.Set;
 
 import mld.semantic.AudioProgram;
+import mld.semantic.LoopModel;
 import mld.semantic.NativeProgram;
 
 /** Decoder/mixer coordinator for verified legacy MFiAudio sampled paths. */
@@ -23,7 +24,8 @@ public final class AudioRenderer {
     public boolean hasRenderableAudio(NativeProgram program) {
         return program != null
                 && !hasBlockingUnsupportedSampledPath(program)
-                && hasEffectiveVerifiedStart(program);
+                && hasEffectiveVerifiedStart(program)
+                && hasPeriodicNativePcmTemplate(program);
     }
 
     public StereoPcm render(NativeProgram program) {
@@ -213,10 +215,11 @@ public final class AudioRenderer {
         for (MutableVoice builder : voiceBuilders) voices.add(builder.freeze());
 
         long semanticEndMicros = program.timing.rawTickToMicros(program.semanticEndRawTick);
-        long loopStartMicros = program.loop.hasLoop
-                ? program.timing.rawTickToMicros(program.loop.loopStartRawTick) : 0L;
-        long loopEndMicros = program.loop.hasLoop
-                ? program.timing.rawTickToMicros(program.loop.loopEndRawTick) : semanticEndMicros;
+        LoopModel.InfiniteRegion infiniteLoop = program.loop.infiniteRegion;
+        long loopStartMicros = infiniteLoop == null
+                ? 0L : program.timing.rawTickToMicros(infiniteLoop.loopStartRawTick);
+        long loopEndMicros = infiniteLoop == null
+                ? semanticEndMicros : program.timing.rawTickToMicros(infiniteLoop.loopEndRawTick);
         return new AudioPlaybackSource(
                 AudioPlaybackSource.NATIVE_SAMPLE_RATE,
                 semanticEndMicros,
@@ -431,6 +434,15 @@ public final class AudioRenderer {
             throw new IllegalArgumentException(
                     "Native program contains sampled-audio execution outside the enabled exact route-0 profiles");
         }
+        if (!hasPeriodicNativePcmTemplate(program)) {
+            throw new IllegalArgumentException(
+                    "Native infinite loop has evolving semantic state and cannot use a frozen PCM template");
+        }
+    }
+
+    private static boolean hasPeriodicNativePcmTemplate(NativeProgram program) {
+        return program == null || program.nativeLoop == null
+                || program.nativeLoop.isPcmTemplatePeriodic(program);
     }
 
     private static boolean hasBlockingUnsupportedSampledPath(NativeProgram program) {
