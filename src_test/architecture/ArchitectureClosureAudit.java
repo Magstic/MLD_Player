@@ -32,6 +32,7 @@ public final class ArchitectureClosureAudit {
         auditLegacyPaths(sourceRoot);
         auditPackagePaths(sourceRoot, sources);
         auditDependencies(sourceRoot, sources);
+        auditMldFormatOwnership(sourceRoot);
         auditSemanticBoundary(sourceRoot);
         auditAudioOwnership(sourceRoot, sources);
         auditSingleMidiSerializer(sourceRoot, sources);
@@ -123,6 +124,17 @@ public final class ArchitectureClosureAudit {
                     fail("semantic boundary violation in " + unix(source) + ": " + forbidden);
                 }
             }
+        }
+    }
+
+    private static void auditMldFormatOwnership(Path sourceRoot) throws IOException {
+        Path scanner = sourceRoot.resolve("main/EmbeddedMldScanner.java");
+        if (!Files.isRegularFile(scanner)) {
+            return;
+        }
+        String text = read(scanner);
+        if (text.contains("isMelo(") || text.contains("readBe32(")) {
+            fail("EmbeddedMldScanner must delegate MLD container framing to mld.format.MldReader");
         }
     }
 

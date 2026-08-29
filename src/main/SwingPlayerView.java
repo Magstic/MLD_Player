@@ -1,15 +1,22 @@
 package main;
 
+import java.awt.BasicStroke;
 import java.awt.BorderLayout;
+import java.awt.CardLayout;
 import java.awt.Color;
 import java.awt.Cursor;
 import java.awt.Dimension;
 import java.awt.Font;
+import java.awt.Graphics;
+import java.awt.Graphics2D;
 import java.awt.GridBagLayout;
+import java.awt.Insets;
+import java.awt.RenderingHints;
 import java.awt.datatransfer.DataFlavor;
 import java.awt.datatransfer.Transferable;
 import java.awt.event.MouseAdapter;
 import java.awt.event.MouseEvent;
+import java.awt.event.MouseMotionAdapter;
 import java.awt.event.WindowAdapter;
 import java.awt.event.WindowEvent;
 import java.io.File;
@@ -27,6 +34,7 @@ import javax.swing.JFileChooser;
 import javax.swing.JFrame;
 import javax.swing.JLabel;
 import javax.swing.JList;
+import javax.swing.JTextField;
 import javax.swing.JOptionPane;
 import javax.swing.JPanel;
 import javax.swing.JScrollPane;
@@ -35,6 +43,8 @@ import javax.swing.ListCellRenderer;
 import javax.swing.ListSelectionModel;
 import javax.swing.SwingConstants;
 import javax.swing.TransferHandler;
+import javax.swing.event.DocumentEvent;
+import javax.swing.event.DocumentListener;
 import javax.swing.border.EmptyBorder;
 import javax.swing.filechooser.FileNameExtensionFilter;
 
@@ -49,7 +59,8 @@ final class SwingPlayerView {
         void onExportRequested();
         void onMidiOutputSelected(MidiOutput output);
         void onMasterVolumeChanged(int value);
-        void onPlaylistEntryActivated(int index);
+        void onPlaylistEntryActivated(PlaylistState.Entry entry);
+        void onPlaylistSearchChanged(String query);
         void onFilesDropped(List<Path> files);
         void onWindowClosing();
     }
@@ -80,11 +91,16 @@ final class SwingPlayerView {
     private JLabel titleLabel;
     private JLabel copyrightLabel;
     private SwingPlayerWidgets.ProgressBar progressBar;
-    private JLabel playlistHintLabel;
+    private JLabel playlistCountLabel;
     private SwingPlayerWidgets.LoopButton loopButton;
     private SwingPlayerWidgets.ExportButton exportButton;
     private JList<PlaylistState.Entry> playlistList;
     private DefaultListModel<PlaylistState.Entry> playlistModel;
+    private CardLayout playlistCardLayout;
+    private JPanel playlistContentPanel;
+    private SearchTextField playlistSearchField;
+    private int lastVisiblePlaylistCount;
+    private int lastTotalPlaylistCount;
     private JComboBox<MidiOutput> outputCombo;
     private boolean changingMidiOutput;
     private MidiOutput currentMidiOutput;
@@ -105,14 +121,28 @@ final class SwingPlayerView {
         frame.setVisible(true);
     }
 
-    Path chooseOpenFile() {
+    List<Path> chooseOpenPaths() {
         JFileChooser chooser = new JFileChooser();
-        chooser.setDialogTitle("Open MLD");
-        chooser.setFileFilter(new FileNameExtensionFilter("MLD / MFI Files", "mld", "mfi"));
-        if (chooser.showOpenDialog(frame) != JFileChooser.APPROVE_OPTION || chooser.getSelectedFile() == null) {
-            return null;
+        chooser.setDialogTitle("Open MLD / MFi files, game data, or folder");
+        chooser.setFileSelectionMode(JFileChooser.FILES_AND_DIRECTORIES);
+        chooser.setMultiSelectionEnabled(true);
+        chooser.setFileFilter(new FileNameExtensionFilter(
+                "MLD / MFi / JAR / Scratchpad", "mld", "mfi", "jar", "sp", "zip", "gz"));
+        if (chooser.showOpenDialog(frame) != JFileChooser.APPROVE_OPTION) {
+            return new ArrayList<Path>();
         }
-        return chooser.getSelectedFile().toPath().toAbsolutePath().normalize();
+        List<Path> paths = new ArrayList<Path>();
+        File[] selectedFiles = chooser.getSelectedFiles();
+        if (selectedFiles != null && selectedFiles.length > 0) {
+            for (File file : selectedFiles) {
+                if (file != null) {
+                    paths.add(file.toPath().toAbsolutePath().normalize());
+                }
+            }
+        } else if (chooser.getSelectedFile() != null) {
+            paths.add(chooser.getSelectedFile().toPath().toAbsolutePath().normalize());
+        }
+        return paths;
     }
 
     ExportSelection chooseExportSelection() {
@@ -143,21 +173,34 @@ final class SwingPlayerView {
                 mode == null ? ExportMode.AUTO : mode);
     }
 
-    void addPlaylistEntry(PlaylistState.Entry entry) {
-        playlistModel.addElement(entry);
-        updatePlaylistHint(playlistModel.size());
+    void setPlaylistEntries(List<PlaylistState.Entry> entries) {
+        playlistModel.clear();
+        if (entries != null) {
+            for (PlaylistState.Entry entry : entries) {
+                playlistModel.addElement(entry);
+            }
+        }
     }
 
-    int selectedPlaylistIndex() {
-        return playlistList.getSelectedIndex();
+    PlaylistState.Entry selectedPlaylistEntry() {
+        return playlistList.getSelectedValue();
     }
 
-    void selectPlaylistIndex(int index) {
-        if (index < 0 || index >= playlistModel.size()) {
+    void selectPlaylistEntry(PlaylistState.Entry entry) {
+        if (entry == null) {
+            playlistList.clearSelection();
+            playlistList.repaint();
             return;
         }
-        playlistList.setSelectedIndex(index);
-        playlistList.ensureIndexIsVisible(index);
+        for (int i = 0; i < playlistModel.size(); i++) {
+            if (playlistModel.get(i) == entry) {
+                playlistList.setSelectedIndex(i);
+                playlistList.ensureIndexIsVisible(i);
+                playlistList.repaint();
+                return;
+            }
+        }
+        playlistList.clearSelection();
         playlistList.repaint();
     }
 
@@ -190,7 +233,7 @@ final class SwingPlayerView {
 
     void showLoadFailure() {
         titleLabel.setText("Failed to Load");
-        copyrightLabel.setText("Tap Play to load MLD (MFi)");
+        copyrightLabel.setText("Unknown Artist");
         progressBar.setValue(0);
         progressBar.setIndeterminate(false);
     }
@@ -227,9 +270,9 @@ final class SwingPlayerView {
     void setExporting(boolean exporting, int trackCount) {
         exportButton.setEnabled(!exporting);
         if (exporting) {
-            playlistHintLabel.setText("Exporting " + trackCount + " tracks...");
+            playlistCountLabel.setText("Exporting " + trackCount + "...");
         } else {
-            updatePlaylistHint(playlistModel.size());
+            updatePlaylistChrome(lastVisiblePlaylistCount, lastTotalPlaylistCount);
         }
     }
 
@@ -307,7 +350,7 @@ final class SwingPlayerView {
         progressBar.setAlignmentX(JComponent.LEFT_ALIGNMENT);
         trackInfo.add(progressBar);
         trackInfo.add(Box.createVerticalGlue());
-        copyrightLabel = new JLabel("Tap Play to load MLD (MFi)");
+        copyrightLabel = new JLabel("Unknown Artist");
         copyrightLabel.setForeground(COPYRIGHT_COLOR);
         copyrightLabel.setFont(SwingPlayerWidgets.findFont(Font.PLAIN, 16));
         copyrightLabel.setHorizontalAlignment(SwingConstants.RIGHT);
@@ -338,8 +381,8 @@ final class SwingPlayerView {
         volumeSlider.setOpaque(false);
         volumeSlider.setUI(new SwingPlayerWidgets.MinimalSliderUI(volumeSlider));
         volumeSlider.setCursor(Cursor.getPredefinedCursor(Cursor.HAND_CURSOR));
-        volumeSlider.setPreferredSize(new Dimension(180, 28));
-        volumeSlider.setMaximumSize(new Dimension(220, 28));
+        volumeSlider.setPreferredSize(new Dimension(150, 28));
+        volumeSlider.setMaximumSize(new Dimension(170, 28));
         volumeSlider.getAccessibleContext().setAccessibleName("Master volume");
         volumeSlider.addChangeListener(e -> {
             int value = volumeSlider.getValue();
@@ -377,17 +420,42 @@ final class SwingPlayerView {
         JPanel playlistPanel = new JPanel(new BorderLayout(0, 8));
         playlistPanel.setBackground(BACKGROUND_COLOR);
         playlistPanel.setBorder(new EmptyBorder(10, 12, 12, 12));
-        JPanel header = new JPanel(new BorderLayout());
+        JPanel header = new JPanel(new BorderLayout(12, 0));
         header.setOpaque(false);
         JLabel headerTitle = new JLabel("Playlist");
         headerTitle.setForeground(TITLE_COLOR);
         headerTitle.setFont(SwingPlayerWidgets.findFont(Font.PLAIN, 16));
         header.add(headerTitle, BorderLayout.WEST);
-        playlistHintLabel = new JLabel();
-        playlistHintLabel.setForeground(PLAYLIST_HINT_COLOR);
-        playlistHintLabel.setFont(SwingPlayerWidgets.findFont(Font.PLAIN, 12));
-        playlistHintLabel.setHorizontalAlignment(SwingConstants.RIGHT);
-        header.add(playlistHintLabel, BorderLayout.EAST);
+
+        playlistSearchField = new SearchTextField();
+        playlistSearchField.setColumns(18);
+        playlistSearchField.setPreferredSize(new Dimension(210, 32));
+        playlistSearchField.setMaximumSize(new Dimension(240, 32));
+        playlistSearchField.setToolTipText("Search playlist");
+        playlistSearchField.getDocument().addDocumentListener(new DocumentListener() {
+            @Override
+            public void insertUpdate(DocumentEvent event) {
+                handleSearchFieldChanged();
+            }
+
+            @Override
+            public void removeUpdate(DocumentEvent event) {
+                handleSearchFieldChanged();
+            }
+
+            @Override
+            public void changedUpdate(DocumentEvent event) {
+                handleSearchFieldChanged();
+            }
+        });
+        header.add(playlistSearchField, BorderLayout.CENTER);
+
+        playlistCountLabel = new JLabel();
+        playlistCountLabel.setForeground(PLAYLIST_HINT_COLOR);
+        playlistCountLabel.setFont(SwingPlayerWidgets.findFont(Font.PLAIN, 12));
+        playlistCountLabel.setHorizontalAlignment(SwingConstants.RIGHT);
+        playlistCountLabel.setBorder(new EmptyBorder(0, 8, 0, 0));
+        header.add(playlistCountLabel, BorderLayout.EAST);
 
         playlistModel = new DefaultListModel<PlaylistState.Entry>();
         playlistList = new JList<PlaylistState.Entry>(playlistModel);
@@ -406,8 +474,9 @@ final class SwingPlayerView {
                 if (index >= 0 && index < playlistModel.size()
                         && playlistList.getCellBounds(index, index) != null
                         && playlistList.getCellBounds(index, index).contains(event.getPoint())) {
-                    selectPlaylistIndex(index);
-                    listener.onPlaylistEntryActivated(index);
+                    PlaylistState.Entry entry = playlistModel.get(index);
+                    selectPlaylistEntry(entry);
+                    listener.onPlaylistEntryActivated(entry);
                 }
             }
         });
@@ -415,16 +484,27 @@ final class SwingPlayerView {
         TransferHandler transferHandler = new PlaylistTransferHandler();
         playlistList.setTransferHandler(transferHandler);
         JScrollPane scrollPane = new JScrollPane(playlistList);
-        scrollPane.setBorder(BorderFactory.createLineBorder(PLAYLIST_BORDER_COLOR));
+        scrollPane.setBorder(BorderFactory.createEmptyBorder());
         scrollPane.getViewport().setBackground(PLAYLIST_SURFACE_COLOR);
         scrollPane.setTransferHandler(transferHandler);
+
+        JPanel emptyState = createPlaylistEmptyState();
+        emptyState.setTransferHandler(transferHandler);
+        playlistCardLayout = new CardLayout();
+        playlistContentPanel = new JPanel(playlistCardLayout);
+        playlistContentPanel.setBackground(PLAYLIST_SURFACE_COLOR);
+        playlistContentPanel.setBorder(BorderFactory.createLineBorder(PLAYLIST_BORDER_COLOR));
+        playlistContentPanel.add(emptyState, "empty");
+        playlistContentPanel.add(scrollPane, "list");
+        playlistContentPanel.setTransferHandler(transferHandler);
+
         playlistPanel.setTransferHandler(transferHandler);
         playlistPanel.add(header, BorderLayout.NORTH);
-        playlistPanel.add(scrollPane, BorderLayout.CENTER);
+        playlistPanel.add(playlistContentPanel, BorderLayout.CENTER);
         root.setTransferHandler(transferHandler);
         root.add(playlistPanel, BorderLayout.CENTER);
 
-        updatePlaylistHint(0);
+        updatePlaylistChrome(0, 0);
         frame.setContentPane(root);
         frame.pack();
         frame.setMinimumSize(new Dimension(500, 480));
@@ -478,10 +558,118 @@ final class SwingPlayerView {
         }
     }
 
-    private void updatePlaylistHint(int count) {
-        playlistHintLabel.setText(count == 0
-                ? "Drag MLD / MFi files here"
-                : "Double-click a track to play");
+    void updatePlaylistChrome(int visibleCount, int totalCount) {
+        lastVisiblePlaylistCount = visibleCount;
+        lastTotalPlaylistCount = totalCount;
+        if (playlistCountLabel != null) {
+            if (totalCount <= 0) {
+                playlistCountLabel.setText("0 tracks");
+            } else if (visibleCount == totalCount) {
+                playlistCountLabel.setText(totalCount + (totalCount == 1 ? " track" : " tracks"));
+            } else {
+                playlistCountLabel.setText(visibleCount + " / " + totalCount);
+            }
+        }
+        if (playlistCardLayout != null && playlistContentPanel != null) {
+            playlistCardLayout.show(playlistContentPanel, totalCount == 0 ? "empty" : "list");
+        }
+    }
+
+    private void handleSearchFieldChanged() {
+        if (playlistSearchField != null) {
+            playlistSearchField.repaint();
+        }
+        if (listener != null && playlistSearchField != null) {
+            listener.onPlaylistSearchChanged(playlistSearchField.getText());
+        }
+    }
+
+    private JPanel createPlaylistEmptyState() {
+        JPanel emptyState = new JPanel(new GridBagLayout());
+        emptyState.setBackground(PLAYLIST_SURFACE_COLOR);
+
+        JPanel lines = new JPanel();
+        lines.setOpaque(false);
+        lines.setLayout(new BoxLayout(lines, BoxLayout.Y_AXIS));
+        lines.add(emptyStateLine("How to Play ?", new Color(112, 112, 112), 19));
+        lines.add(Box.createVerticalStrut(12));
+        lines.add(emptyStateLine("Tap Play to load", PLAYLIST_HINT_COLOR, 16));
+        lines.add(Box.createVerticalStrut(7));
+        lines.add(emptyStateLine("Drag Mld to here", PLAYLIST_HINT_COLOR, 16));
+        lines.add(Box.createVerticalStrut(7));
+        lines.add(emptyStateLine("Drag JAR or Scratchpad", PLAYLIST_HINT_COLOR, 16));
+        emptyState.add(lines);
+        return emptyState;
+    }
+
+    private JLabel emptyStateLine(String text, Color color, int fontSize) {
+        JLabel label = new JLabel(text);
+        label.setForeground(color);
+        label.setFont(SwingPlayerWidgets.findFont(Font.PLAIN, fontSize));
+        label.setAlignmentX(JComponent.CENTER_ALIGNMENT);
+        label.setHorizontalAlignment(SwingConstants.CENTER);
+        return label;
+    }
+
+    private static final class SearchTextField extends JTextField {
+        private static final long serialVersionUID = 1L;
+        private static final int CLEAR_REGION_WIDTH = 26;
+
+        SearchTextField() {
+            addMouseListener(new MouseAdapter() {
+                @Override
+                public void mouseClicked(MouseEvent event) {
+                    if (hasClearIcon() && event.getX() >= getWidth() - CLEAR_REGION_WIDTH) {
+                        setText("");
+                        requestFocusInWindow();
+                    }
+                }
+
+                @Override
+                public void mouseExited(MouseEvent event) {
+                    setCursor(Cursor.getPredefinedCursor(Cursor.TEXT_CURSOR));
+                }
+            });
+            addMouseMotionListener(new MouseMotionAdapter() {
+                @Override
+                public void mouseMoved(MouseEvent event) {
+                    setCursor(Cursor.getPredefinedCursor(
+                            hasClearIcon() && event.getX() >= getWidth() - CLEAR_REGION_WIDTH
+                                    ? Cursor.HAND_CURSOR
+                                    : Cursor.TEXT_CURSOR));
+                }
+            });
+        }
+
+        @Override
+        public Insets getInsets() {
+            Insets insets = super.getInsets();
+            int extraRight = hasClearIcon() ? CLEAR_REGION_WIDTH - 4 : 0;
+            return new Insets(insets.top, insets.left, insets.bottom, insets.right + extraRight);
+        }
+
+        @Override
+        protected void paintComponent(Graphics graphics) {
+            super.paintComponent(graphics);
+            if (!hasClearIcon()) {
+                return;
+            }
+            Graphics2D g2d = (Graphics2D) graphics.create();
+            g2d.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
+            Color color = getForeground();
+            g2d.setColor(new Color(color.getRed(), color.getGreen(), color.getBlue(), 150));
+            g2d.setStroke(new BasicStroke(1.6f, BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND));
+            int centerX = getWidth() - 13;
+            int centerY = getHeight() / 2;
+            int radius = 4;
+            g2d.drawLine(centerX - radius, centerY - radius, centerX + radius, centerY + radius);
+            g2d.drawLine(centerX + radius, centerY - radius, centerX - radius, centerY + radius);
+            g2d.dispose();
+        }
+
+        private boolean hasClearIcon() {
+            return isEnabled() && getDocument() != null && getDocument().getLength() > 0;
+        }
     }
 
     private final class PlaylistTransferHandler extends TransferHandler {

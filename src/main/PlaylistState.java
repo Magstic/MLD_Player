@@ -40,6 +40,10 @@ final class PlaylistState {
         return index >= 0 && index < entries.size() ? entries.get(index) : null;
     }
 
+    List<Entry> entries() {
+        return new ArrayList<Entry>(entries);
+    }
+
     int indexOf(Entry entry) {
         if (entry == null) {
             return -1;

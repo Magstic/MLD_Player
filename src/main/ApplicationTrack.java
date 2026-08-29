@@ -56,12 +56,7 @@ final class ApplicationTrack {
     }
 
     String displayCopyright() {
-        if (!isPlayable()) {
-            return copyright.isEmpty()
-                    ? "No renderable melody or sampled audio"
-                    : copyright + "  |  no renderable media";
-        }
-        return copyright.isEmpty() ? " " : copyright;
+        return copyright.isEmpty() ? "Unknown Artist" : copyright;
     }
 
     static String fileStem(Path path) {

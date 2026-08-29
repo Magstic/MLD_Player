@@ -1,10 +1,16 @@
 package main;
 
 import java.awt.EventQueue;
+import java.io.IOException;
+import java.nio.file.DirectoryStream;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.util.ArrayList;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 
 import javax.swing.SwingWorker;
@@ -23,6 +29,7 @@ final class SwingPlayerController implements SwingPlayerView.Listener {
 
     private final String[] startupArgs;
     private final MldApplicationWorkflow workflow = new MldApplicationWorkflow();
+    private final EmbeddedMldScanner embeddedMldScanner = new EmbeddedMldScanner();
     private final PlaylistState playlist = new PlaylistState();
     private final MasterVolume masterVolume = new MasterVolume(127);
     private final Map<PlaylistState.Entry, SwingWorker<ApplicationTrack, Void>> inFlightLoads =
@@ -30,6 +37,7 @@ final class SwingPlayerController implements SwingPlayerView.Listener {
     private final SwingPlayerView view;
     private volatile MidiOutput midiOutput;
     private volatile boolean loading;
+    private volatile boolean discoveringInputs;
     private volatile boolean sessionActive;
     private volatile boolean paused;
     private volatile boolean stopRequested;
@@ -38,6 +46,9 @@ final class SwingPlayerController implements SwingPlayerView.Listener {
     private volatile PlaylistState.Entry pendingPlaybackEntry;
     private PlaylistState.Entry foregroundLoadEntry;
     private boolean foregroundAutoPlay;
+    private Path embeddedTempDirectory;
+    private int embeddedTempSequence;
+    private String playlistSearchQuery = "";
 
     SwingPlayerController(String[] startupArgs) {
         this.startupArgs = startupArgs == null ? new String[0] : startupArgs.clone();
@@ -50,7 +61,9 @@ final class SwingPlayerController implements SwingPlayerView.Listener {
     void show() {
         view.show();
         if (startupArgs.length > 0 && startupArgs[0] != null && !startupArgs[0].trim().isEmpty()) {
-            openPath(Paths.get(startupArgs[0]).toAbsolutePath().normalize(), true);
+            scanAndAddInputs(
+                    Collections.singletonList(Paths.get(startupArgs[0]).toAbsolutePath().normalize()),
+                    true);
         }
     }
 
@@ -64,20 +77,14 @@ final class SwingPlayerController implements SwingPlayerView.Listener {
             view.setPaused(paused);
             return;
         }
-        PlaylistState.Entry selectedEntry = playlist.get(view.selectedPlaylistIndex());
+        PlaylistState.Entry selectedEntry = view.selectedPlaylistEntry();
         if (selectedEntry != null && (currentEntry == null || selectedEntry != currentEntry)) {
             openPlaylistEntry(selectedEntry, true);
             return;
         }
-        if (currentTrack == null) {
-            Path inputPath = view.chooseOpenFile();
-            if (inputPath != null) {
-                openPath(inputPath, true);
-            }
-        } else if (!currentTrack.isPlayable()) {
-            Path inputPath = view.chooseOpenFile();
-            if (inputPath != null) {
-                openPath(inputPath, true);
+        if (currentTrack == null || !currentTrack.isPlayable()) {
+            if (!discoveringInputs) {
+                chooseAndOpenTracks();
             }
         } else {
             startPlayback(currentTrack);
@@ -110,17 +117,22 @@ final class SwingPlayerController implements SwingPlayerView.Listener {
     }
 
     @Override
-    public void onPlaylistEntryActivated(int index) {
-        PlaylistState.Entry entry = playlist.get(index);
+    public void onPlaylistEntryActivated(PlaylistState.Entry entry) {
         if (entry != null) {
-            view.selectPlaylistIndex(index);
+            view.selectPlaylistEntry(entry);
             openPlaylistEntry(entry, true);
         }
     }
 
     @Override
+    public void onPlaylistSearchChanged(String query) {
+        playlistSearchQuery = query == null ? "" : query.trim();
+        refreshPlaylistView();
+    }
+
+    @Override
     public void onFilesDropped(List<Path> files) {
-        addDroppedFiles(files);
+        scanAndAddInputs(files, false);
     }
 
     @Override
@@ -137,19 +149,11 @@ final class SwingPlayerController implements SwingPlayerView.Listener {
         }
     }
 
-    private void openPath(Path inputPath, boolean autoPlayAfterLoad) {
-        if (!PlaylistState.accepts(inputPath)) {
-            return;
-        }
-        PlaylistState.Entry entry = ensurePlaylistEntry(inputPath);
-        openPlaylistEntry(entry, autoPlayAfterLoad);
-    }
-
     private void openPlaylistEntry(PlaylistState.Entry entry, boolean autoPlayAfterLoad) {
         if (entry == null) {
             return;
         }
-        view.selectPlaylistIndex(playlist.indexOf(entry));
+        view.selectPlaylistEntry(entry);
         if (sessionActive) {
             if (entry == currentEntry) {
                 return;
@@ -173,31 +177,141 @@ final class SwingPlayerController implements SwingPlayerView.Listener {
             return existing;
         }
         PlaylistState.Entry entry = playlist.ensure(normalized);
-        view.addPlaylistEntry(entry);
+        refreshPlaylistView();
         requestLoad(entry);
         if (playlist.size() == 1) {
-            view.selectPlaylistIndex(0);
+            view.selectPlaylistEntry(entry);
         }
         return entry;
     }
 
-    private void addDroppedFiles(List<Path> files) {
+    private void chooseAndOpenTracks() {
+        List<Path> selected = view.chooseOpenPaths();
+        if (!selected.isEmpty()) {
+            scanAndAddInputs(selected, true);
+        }
+    }
+
+    private void scanAndAddInputs(final List<Path> selected, final boolean autoPlayFirst) {
+        if (selected == null || selected.isEmpty() || discoveringInputs) {
+            return;
+        }
+        discoveringInputs = true;
+        SwingWorker<List<Path>, Void> worker = new SwingWorker<List<Path>, Void>() {
+            @Override
+            protected List<Path> doInBackground() throws Exception {
+                return discoverInputs(selected);
+            }
+
+            @Override
+            protected void done() {
+                discoveringInputs = false;
+                try {
+                    List<Path> files = get();
+                    if (files.isEmpty()) {
+                        if (autoPlayFirst) {
+                            view.showInformation("No MLD / MFi data were found.", "Nothing to open");
+                        }
+                        return;
+                    }
+                    addFilesToPlaylist(files, autoPlayFirst);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                } catch (Exception e) {
+                    Throwable cause = e.getCause() == null ? e : e.getCause();
+                    debugException("Input discovery failed", cause);
+                    if (autoPlayFirst) {
+                        view.showError(
+                                cause.getMessage() == null ? "Unable to scan the selected input." : cause.getMessage(),
+                                "Open failed");
+                    }
+                }
+            }
+        };
+        worker.execute();
+    }
+
+    private List<Path> discoverInputs(List<Path> selected) throws IOException {
+        List<Path> resolved = new ArrayList<Path>();
+        for (Path input : selected) {
+            if (input == null) {
+                continue;
+            }
+            Path normalized = input.toAbsolutePath().normalize();
+            if (Files.isDirectory(normalized)) {
+                List<Path> children = new ArrayList<Path>();
+                try (DirectoryStream<Path> stream = Files.newDirectoryStream(normalized)) {
+                    for (Path child : stream) {
+                        if (Files.isRegularFile(child)) {
+                            children.add(child.toAbsolutePath().normalize());
+                        }
+                    }
+                }
+                Collections.sort(children);
+                for (Path child : children) {
+                    discoverFile(child, resolved);
+                }
+            } else if (Files.isRegularFile(normalized)) {
+                discoverFile(normalized, resolved);
+            }
+        }
+        return resolved;
+    }
+
+    private void discoverFile(Path input, List<Path> resolved) throws IOException {
+        if (PlaylistState.accepts(input)) {
+            resolved.add(input);
+            return;
+        }
+        final List<EmbeddedMldScanner.FoundMld> found;
+        try {
+            found = embeddedMldScanner.scan(input);
+        } catch (IOException e) {
+            debugException("Skipping unscannable container: " + input, e);
+            return;
+        }
+        for (EmbeddedMldScanner.FoundMld mld : found) {
+            resolved.add(materializeEmbeddedMld(mld));
+        }
+    }
+
+    private Path materializeEmbeddedMld(EmbeddedMldScanner.FoundMld found) throws IOException {
+        if (embeddedTempDirectory == null) {
+            embeddedTempDirectory = Files.createTempDirectory("mld-player-embedded-");
+            embeddedTempDirectory.toFile().deleteOnExit();
+        }
+        String safeOrigin = found.origin.replaceAll("[^A-Za-z0-9._-]+", "_");
+        if (safeOrigin.length() > 72) {
+            safeOrigin = safeOrigin.substring(safeOrigin.length() - 72);
+        }
+        String name = String.format("%04d-%s.mld", ++embeddedTempSequence, safeOrigin);
+        Path output = embeddedTempDirectory.resolve(name);
+        Files.write(output, found.copyData());
+        output.toFile().deleteOnExit();
+        return output;
+    }
+
+    private void addFilesToPlaylist(List<Path> files, boolean autoPlayFirst) {
         if (files == null || files.isEmpty()) {
             return;
         }
-        int firstAddedIndex = -1;
+        PlaylistState.Entry firstEntry = null;
         for (Path file : files) {
             if (!PlaylistState.accepts(file)) {
                 continue;
             }
             PlaylistState.Entry existing = playlist.find(file);
             PlaylistState.Entry entry = existing != null ? existing : ensurePlaylistEntry(file);
-            if (firstAddedIndex < 0) {
-                firstAddedIndex = playlist.indexOf(entry);
+            if (firstEntry == null) {
+                firstEntry = entry;
             }
         }
-        if (firstAddedIndex >= 0) {
-            view.selectPlaylistIndex(firstAddedIndex);
+        if (firstEntry == null) {
+            return;
+        }
+        view.selectPlaylistEntry(firstEntry);
+        if (autoPlayFirst) {
+            openPlaylistEntry(firstEntry, true);
         }
     }
 
@@ -308,6 +422,7 @@ final class SwingPlayerController implements SwingPlayerView.Listener {
         entry.displayTitle = track.displayTitle();
         entry.durationText = formatDuration(track.durationMillis);
         entry.failed = false;
+        refreshPlaylistView();
     }
 
     private void loadTrack(final Path inputPath, final boolean autoPlayAfterLoad) {
@@ -318,7 +433,7 @@ final class SwingPlayerController implements SwingPlayerView.Listener {
         if (entry == null) {
             return;
         }
-        view.selectPlaylistIndex(playlist.indexOf(entry));
+        view.selectPlaylistEntry(entry);
         foregroundLoadEntry = entry;
         foregroundAutoPlay = autoPlayAfterLoad;
         if (entry.loadedTrack != null) {
@@ -348,7 +463,8 @@ final class SwingPlayerController implements SwingPlayerView.Listener {
         if (entry != null) {
             currentEntry = entry;
             view.setActiveEntry(entry);
-            view.selectPlaylistIndex(playlist.indexOf(entry));
+            refreshPlaylistView();
+            view.selectPlaylistEntry(entry);
         }
         view.showTrack(track);
         view.repaintPlaylist();
@@ -361,6 +477,7 @@ final class SwingPlayerController implements SwingPlayerView.Listener {
             entry.failed = true;
             entry.durationText = "--:--";
         }
+        refreshPlaylistView();
         view.showLoadFailure();
         view.repaintPlaylist();
     }
@@ -457,12 +574,58 @@ final class SwingPlayerController implements SwingPlayerView.Listener {
     }
 
     private void playNextPlaylistTrack() {
-        int nextIndex = playlist.nextIndex(currentEntry, view.selectedPlaylistIndex());
+        int nextIndex = playlist.nextIndex(currentEntry, playlist.indexOf(view.selectedPlaylistEntry()));
         PlaylistState.Entry entry = playlist.get(nextIndex);
         if (entry != null) {
-            view.selectPlaylistIndex(nextIndex);
+            view.selectPlaylistEntry(entry);
             openPlaylistEntry(entry, true);
         }
+    }
+
+
+    private void refreshPlaylistView() {
+        List<PlaylistState.Entry> visible = new ArrayList<PlaylistState.Entry>();
+        List<PlaylistState.Entry> allEntries = playlist.entries();
+        for (PlaylistState.Entry entry : allEntries) {
+            if (matchesPlaylistFilter(entry, playlistSearchQuery)) {
+                visible.add(entry);
+            }
+        }
+        PlaylistState.Entry selected = view.selectedPlaylistEntry();
+        view.setPlaylistEntries(visible);
+        if (selected != null && visible.contains(selected)) {
+            view.selectPlaylistEntry(selected);
+        } else if (currentEntry != null && visible.contains(currentEntry)) {
+            view.selectPlaylistEntry(currentEntry);
+        } else if (!visible.isEmpty() && allEntries.size() == 1) {
+            view.selectPlaylistEntry(visible.get(0));
+        } else {
+            view.selectPlaylistEntry(null);
+        }
+        view.setActiveEntry(currentEntry);
+        view.updatePlaylistChrome(visible.size(), allEntries.size());
+        view.repaintPlaylist();
+    }
+
+    static boolean matchesPlaylistFilter(PlaylistState.Entry entry, String query) {
+        if (entry == null) {
+            return false;
+        }
+        if (query == null || query.trim().isEmpty()) {
+            return true;
+        }
+        String needle = query.trim().toLowerCase(Locale.ROOT);
+        StringBuilder haystack = new StringBuilder();
+        if (entry.displayTitle != null) {
+            haystack.append(entry.displayTitle).append(' ');
+        }
+        if (entry.inputPath != null && entry.inputPath.getFileName() != null) {
+            haystack.append(entry.inputPath.getFileName().toString()).append(' ');
+        }
+        if (entry.loadedTrack != null) {
+            haystack.append(entry.loadedTrack.displayCopyright()).append(' ');
+        }
+        return haystack.toString().toLowerCase(Locale.ROOT).contains(needle);
     }
 
     private static String formatDuration(long durationMillis) {
@@ -484,7 +647,7 @@ final class SwingPlayerController implements SwingPlayerView.Listener {
         }
     }
 
-    private static void debugException(String message, Exception error) {
+    private static void debugException(String message, Throwable error) {
         if (!DEBUG_LOG) {
             return;
         }

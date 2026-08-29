@@ -2,11 +2,16 @@ package main;
 
 import java.io.ByteArrayOutputStream;
 import java.io.DataOutputStream;
+import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Collections;
 import java.util.List;
+import java.util.zip.CRC32;
+import java.util.zip.GZIPOutputStream;
+import java.util.zip.ZipEntry;
+import java.util.zip.ZipOutputStream;
 
 import javax.sound.midi.MidiSystem;
 
@@ -31,6 +36,8 @@ public final class ApplicationCompositionAudit {
         auditSharedLoadAndPlaybackComposition();
         auditSampledAudioDisplayDuration();
         auditPlaylistState();
+        auditPlaylistFilteringHelpers();
+        auditEmbeddedMldScanner();
         System.out.println("ApplicationCompositionAudit: PASS");
     }
 
@@ -50,6 +57,7 @@ public final class ApplicationCompositionAudit {
             no("sampled audio absent", track.renderableAudio);
             yes("track playable", track.isPlayable());
             eq("display title", "Workflow Song", track.displayTitle());
+            eq("display copyright", "Round10", track.displayCopyright());
             eq("duration helper", MldApplicationWorkflow.estimateDurationMillis(track.midi), track.durationMillis);
 
             PlaybackContent content = workflow.preparePlayback(track, 0);
@@ -91,8 +99,162 @@ public final class ApplicationCompositionAudit {
             eq("loop toggled", PlaylistState.LoopMode.PLAYLIST, playlist.toggleLoopMode());
             eq("loop toggled back", PlaylistState.LoopMode.SINGLE_TRACK, playlist.toggleLoopMode());
             eq("input path count", 2, playlist.inputPaths().size());
+            ApplicationTrack untitled = new ApplicationTrack(
+                    firstPath,
+                    null,
+                    Collections.<DecodedTrack>emptyList(),
+                    null,
+                    null,
+                    "",
+                    "",
+                    0L,
+                    false);
+            eq("missing copyright fallback", "Unknown Artist", untitled.displayCopyright());
         } finally {
             Files.deleteIfExists(base);
+        }
+    }
+
+    private static void auditPlaylistFilteringHelpers() throws Exception {
+        Path base = Files.createTempDirectory("mld-playlist-filter-");
+        try {
+            PlaylistState playlist = new PlaylistState();
+            PlaylistState.Entry alpha = playlist.ensure(base.resolve("Alpha Song.mld"));
+            alpha.displayTitle = "Alpha Song";
+            PlaylistState.Entry beta = playlist.ensure(base.resolve("boss_theme.mfi"));
+            beta.displayTitle = "Boss Theme";
+            alpha.loadedTrack = new ApplicationTrack(
+                    alpha.inputPath,
+                    null,
+                    Collections.<DecodedTrack>emptyList(),
+                    null,
+                    null,
+                    "Alpha Song",
+                    "Round10",
+                    0L,
+                    false);
+
+            List<PlaylistState.Entry> snapshot = playlist.entries();
+            eq("entries snapshot size", 2, snapshot.size());
+            snapshot.clear();
+            eq("entries snapshot does not mutate playlist", 2, playlist.size());
+            yes("blank query matches", SwingPlayerController.matchesPlaylistFilter(alpha, "  "));
+            yes("title query matches", SwingPlayerController.matchesPlaylistFilter(alpha, "ALPHA"));
+            yes("filename query matches", SwingPlayerController.matchesPlaylistFilter(beta, "boss_theme"));
+            yes("copyright query matches", SwingPlayerController.matchesPlaylistFilter(alpha, "round10"));
+            no("unmatched query rejected", SwingPlayerController.matchesPlaylistFilter(beta, "alpha"));
+        } finally {
+            Files.deleteIfExists(base);
+        }
+    }
+
+    private static void auditEmbeddedMldScanner() throws Exception {
+        EmbeddedMldScanner scanner = new EmbeddedMldScanner();
+        Path base = Files.createTempDirectory("mld-embedded-scan-");
+        try {
+            byte[] melody = fixture();
+            byte[] audio = audioFixture();
+
+            Path directSp = base.resolve("direct.sp");
+            Files.write(directSp, concat(new byte[17], melody, new byte[9]));
+            List<EmbeddedMldScanner.FoundMld> direct = scanner.scan(directSp);
+            eq("SP direct MLD count", 1, direct.size());
+            bytes("SP direct MLD bytes", melody, direct.get(0).copyData());
+            yes("SP direct offset retained", direct.get(0).origin.endsWith("@0x11"));
+
+            byte[] embeddedZip = zip("resources/music.payload", melody, false);
+            Path zippedSp = base.resolve("zipped.sp");
+            Files.write(zippedSp, concat(new byte[31], embeddedZip, new byte[7]));
+            List<EmbeddedMldScanner.FoundMld> zipped = scanner.scan(zippedSp);
+            eq("embedded ZIP MLD count", 1, zipped.size());
+            bytes("embedded ZIP MLD bytes", melody, zipped.get(0).copyData());
+            yes("embedded ZIP origin", zipped.get(0).origin.contains("!resources/music.payload"));
+
+            byte[] innerZip = zip("deep/song.bin", melody, false);
+            byte[] outerZip = zip("opaque/container.dat", innerZip, false);
+            Path nestedJar = base.resolve("nested.jar");
+            Files.write(nestedJar, outerZip);
+            List<EmbeddedMldScanner.FoundMld> nested = scanner.scan(nestedJar);
+            eq("nested ZIP MLD count", 1, nested.size());
+            bytes("nested ZIP MLD bytes", melody, nested.get(0).copyData());
+            yes("nested ZIP origin", nested.get(0).origin.contains("!opaque/container.dat!deep/song.bin"));
+
+            Path gzipSp = base.resolve("gzip.sp");
+            Files.write(gzipSp, concat(new byte[13], gzip(melody), new byte[5]));
+            List<EmbeddedMldScanner.FoundMld> gzip = scanner.scan(gzipSp);
+            eq("embedded GZIP MLD count", 1, gzip.size());
+            bytes("embedded GZIP MLD bytes", melody, gzip.get(0).copyData());
+
+            Path concatenated = base.resolve("blocks.sp");
+            Files.write(concatenated, concat(new byte[3], melody, new byte[4], audio, new byte[2]));
+            List<EmbeddedMldScanner.FoundMld> blocks = scanner.scan(concatenated);
+            eq("concatenated MLD count", 2, blocks.size());
+            bytes("concatenated first MLD", melody, blocks.get(0).copyData());
+            bytes("concatenated second MLD", audio, blocks.get(1).copyData());
+
+            Path storedJar = base.resolve("stored.jar");
+            Files.write(storedJar, zip("stored/no-extension", melody, true));
+            List<EmbeddedMldScanner.FoundMld> stored = scanner.scan(storedJar);
+            eq("stored ZIP no duplicate", 1, stored.size());
+
+            Path noise = base.resolve("noise.bin");
+            Files.write(noise, new byte[] {
+                    'm', 'e', 'l', 'o', 0x7f, 0x7f, 0x7f, 0x7f,
+                    'P', 'K', 0x03, 0x04, 0x00, 0x00,
+                    0x1f, (byte) 0x8b, 0x08, (byte) 0xe0
+            });
+            eq("invalid signatures rejected", 0, scanner.scan(noise).size());
+        } finally {
+            deleteTree(base);
+        }
+    }
+
+    private static byte[] zip(String name, byte[] payload, boolean stored) throws Exception {
+        ByteArrayOutputStream bytes = new ByteArrayOutputStream();
+        ZipOutputStream zip = new ZipOutputStream(bytes);
+        ZipEntry entry = new ZipEntry(name);
+        if (stored) {
+            CRC32 crc = new CRC32();
+            crc.update(payload);
+            entry.setMethod(ZipEntry.STORED);
+            entry.setSize(payload.length);
+            entry.setCompressedSize(payload.length);
+            entry.setCrc(crc.getValue());
+        }
+        zip.putNextEntry(entry);
+        zip.write(payload);
+        zip.closeEntry();
+        zip.close();
+        return bytes.toByteArray();
+    }
+
+    private static byte[] gzip(byte[] payload) throws Exception {
+        ByteArrayOutputStream bytes = new ByteArrayOutputStream();
+        GZIPOutputStream gzip = new GZIPOutputStream(bytes);
+        gzip.write(payload);
+        gzip.close();
+        return bytes.toByteArray();
+    }
+
+    private static byte[] concat(byte[]... parts) throws IOException {
+        ByteArrayOutputStream bytes = new ByteArrayOutputStream();
+        for (byte[] part : parts) {
+            bytes.write(part);
+        }
+        return bytes.toByteArray();
+    }
+
+    private static void deleteTree(Path root) throws IOException {
+        if (root == null || !Files.exists(root)) {
+            return;
+        }
+        List<Path> paths = new java.util.ArrayList<Path>();
+        try (java.util.stream.Stream<Path> stream = java.nio.file.Files.walk(root)) {
+            stream.forEach(paths::add);
+        }
+        Collections.sort(paths, Collections.reverseOrder());
+        for (Path path : paths) {
+            Files.deleteIfExists(path);
         }
     }
 

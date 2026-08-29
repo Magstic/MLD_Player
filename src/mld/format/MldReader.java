@@ -1,6 +1,7 @@
 package mld.format;
 
 import java.io.IOException;
+import java.nio.ByteBuffer;
 import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
@@ -35,29 +36,39 @@ public final class MldReader {
         return read(Files.readAllBytes(path));
     }
 
+    /** Returns the exact MLD container length at {@code offset} within a larger byte source. */
+    public int containerLengthAt(ByteBuffer data, int offset) throws IOException {
+        if (data == null) {
+            throw new IllegalArgumentException("MLD byte source is required");
+        }
+        int limit = data.limit();
+        if (offset < 0 || offset > limit - 13) {
+            throw new IOException("MLD frame is too small");
+        }
+        if (u8(data, offset) != 'm'
+                || u8(data, offset + 1) != 'e'
+                || u8(data, offset + 2) != 'l'
+                || u8(data, offset + 3) != 'o') {
+            throw new IOException("Unsupported MLD magic");
+        }
+        long containerLength = readBe32(data, offset + 4) + 8L;
+        if (containerLength < 13L) {
+            throw new IOException("Declared MLD size ends before fixed header");
+        }
+        if (containerLength > Integer.MAX_VALUE || containerLength > limit - offset) {
+            throw new IOException("Truncated MLD container");
+        }
+        return (int) containerLength;
+    }
+
     public MldDocument read(byte[] data) throws IOException {
         if (data.length < 13) {
             throw new IOException("MLD file too small");
         }
 
-        String magic = new String(data, 0, 4, ASCII);
-        if (!"melo".equals(magic)) {
-            throw new IOException("Unsupported MLD magic: " + magic);
-        }
-
-        long sizeField = readBe32(data, 4);
-        long logicalEndLong = sizeField + 8L;
-        if (logicalEndLong < 13L) {
-            throw new IOException("Declared MLD size ends before fixed header");
-        }
-        if (logicalEndLong > data.length) {
-            throw new IOException(
-                    "Truncated MLD container: declared end 0x"
-                            + Long.toHexString(logicalEndLong)
-                            + " exceeds physical length 0x"
-                            + Integer.toHexString(data.length));
-        }
-        int logicalEnd = (int) logicalEndLong;
+        int logicalEnd = containerLengthAt(ByteBuffer.wrap(data), 0);
+        String magic = "melo";
+        long sizeField = logicalEnd - 8L;
 
         int headerLength = readBe16(data, 8);
         int majorType = data[10] & 0xFF;
@@ -197,6 +208,17 @@ public final class MldReader {
                 | ((long) (data[offset + 1] & 0xFF) << 16)
                 | ((long) (data[offset + 2] & 0xFF) << 8)
                 | ((long) (data[offset + 3] & 0xFF));
+    }
+
+    private static long readBe32(ByteBuffer data, int offset) {
+        return ((long) u8(data, offset) << 24)
+                | ((long) u8(data, offset + 1) << 16)
+                | ((long) u8(data, offset + 2) << 8)
+                | u8(data, offset + 3);
+    }
+
+    private static int u8(ByteBuffer data, int offset) {
+        return data.get(offset) & 0xFF;
     }
 
     private static List<Long> parseCuePointOffsets(byte[] payload, int trackCount) throws IOException {
