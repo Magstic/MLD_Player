@@ -12,25 +12,17 @@ import mld.semantic.NativeProgram;
  * Stateful host projection of native melody actions.
  */
 final class MidiProjectionState {
-    private static final int MIDI_CHANNEL_COUNT = 16;
-    private static final int MAX_LOGICAL_CHANNELS = 64;
     private static final int DEFAULT_LEVEL = 63;
     private static final int DEFAULT_PAN = 32;
     private static final int DEFAULT_PITCH_COARSE = 32;
     private static final int DEFAULT_PITCH_FINE = 32;
     private static final int DEFAULT_PITCH_RANGE = 2;
     private static final int DEFAULT_MODULATION = 0;
-    private static final int PSM_GLOBAL_LEVEL_SCALE = 100;
-    private static final int PSM_CHANNEL_LEVEL_SCALE = 100;
-    private static final boolean PSM_FORCE_PAN_LEFT_SYNC = false;
-    private static final boolean PSM_EMIT_SYNTHETIC_PATCH_SYNC_CONTROLS = false;
-    private static final String PATCH_SYNC_VOLUME_SOURCE = "patch_sync_volume";
-    private static final String PATCH_SYNC_PAN_SOURCE = "patch_sync_pan_zero";
     private MidiTimingMapper timing;
     private final List<String> warnings;
     private final List<MidiPlan.CompiledNote> notes = new ArrayList<MidiPlan.CompiledNote>();
     private final List<MidiPlan.MappedControlEvent> controls = new ArrayList<MidiPlan.MappedControlEvent>();
-    private final MidiLaneMapper.LaneTracker laneTracker = MidiLaneMapper.newDefaultLaneTracker();
+    private final MidiLaneMapper.LaneTracker laneTracker = new MidiLaneMapper.LaneTracker();
     private ProjectionChannel[] channels = createChannels();
     private final MidiControlEmitter emitter = new MidiControlEmitter(controls);
 
@@ -202,7 +194,7 @@ final class MidiProjectionState {
     private void volume(MelodyProgram.NativeControl c, long t) {
         int l = prepare(c);
         if (l < 0 || !isHostChannel(l)) return;
-        emitter.emitVolume(c.sourceTrack, c.sourceCommand, c.sourceName, c.rawTick, l, t, computePsmVolumeSync(c.channel, l));
+        emitter.emitVolume(c.sourceTrack, c.sourceCommand, c.sourceName, c.rawTick, l, t, computePsmVolumeSync(c.channel));
     }
 
     private void pan(MelodyProgram.NativeControl c, long t) {
@@ -251,22 +243,15 @@ final class MidiProjectionState {
             return;
         }
         emitter.emitPatch(st, sc, sn, raw, l, t, p);
-        emitSyntheticPatchSyncControls(ch.nativeChannel, l, st, sc, raw, t);
         ch.patch.patchDirty = false;
         ch.patch.lastPatch = p;
-    }
-
-    private void emitSyntheticPatchSyncControls(MelodyProgram.ChannelSnapshot c, int l, int st, int sc, int raw, long t) {
-        if (!PSM_EMIT_SYNTHETIC_PATCH_SYNC_CONTROLS || !isHostChannel(l)) return;
-        emitter.emitVolume(st, sc, PATCH_SYNC_VOLUME_SOURCE, raw, l, t, computePsmVolumeSync(c, l));
-        emitter.emitPan(st, sc, PATCH_SYNC_PAN_SOURCE, raw, l, t, 0);
     }
 
     private void emitInitialMidiDefaults(long t) {
         for (int ch = 0; ch < 16; ch++) {
             MelodyProgram.ChannelSnapshot d = defaultSnapshot();
             channels[ch].copyNative(d);
-            emitter.emitVolume(-1, -1, "default_level", 0, ch, t, computePsmVolumeSync(d, ch));
+            emitter.emitVolume(-1, -1, "default_level", 0, ch, t, computePsmVolumeSync(d));
             emitter.emitPan(-1, -1, "default_pan", 0, ch, t, computePsmPanSync(d));
             emitter.emitPitchRange(-1, -1, "default_pitch_range", 0, ch, t, d.pitchRange);
             emitter.emitPitchBend(-1, -1, "default_pitch", 0, ch, t, computePitchBend(d));
@@ -286,15 +271,12 @@ final class MidiProjectionState {
         if (!warnings.contains(w)) warnings.add(w);
     }
 
-    private static int computePsmVolumeSync(MelodyProgram.ChannelSnapshot c, int l) {
-        int v = clamp(0, 127, c.level * 2);
-        v = v * PSM_GLOBAL_LEVEL_SCALE / 100;
-        v = v * PSM_CHANNEL_LEVEL_SCALE / 100;
-        return clamp(0, 127, v);
+    private static int computePsmVolumeSync(MelodyProgram.ChannelSnapshot c) {
+        return clamp(0, 127, c.level * 2);
     }
 
     private static int computePsmPanSync(MelodyProgram.ChannelSnapshot c) {
-        return PSM_FORCE_PAN_LEFT_SYNC ? 0 : clamp(0, 127, c.pan * 2);
+        return clamp(0, 127, c.pan * 2);
     }
 
     private static int computePitchBend(MelodyProgram.ChannelSnapshot c) {

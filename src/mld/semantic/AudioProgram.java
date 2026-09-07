@@ -342,21 +342,6 @@ public final class AudioProgram {
         }
     }
 
-    public boolean hasSampledAudioContent() {
-        for (AudioAction action : actions) {
-            if (action.kind == ActionKind.NO_ACTION) {
-                continue;
-            }
-            if (action.kind == ActionKind.RESOURCE_START
-                    || action.audioType == AudioType.MFI_8000
-                    || action.audioType == AudioType.MFI_8001
-                    || action.audioType == AudioType.MFI_8002) {
-                return true;
-            }
-        }
-        return false;
-    }
-
     /** Immutable typed sampled resource promoted from a top-level active adat entry. */
     public static final class SampledResource {
         public final AudioType audioType;

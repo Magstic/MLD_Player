@@ -144,12 +144,8 @@ public final class MidiPlanSegmenter {
     private static MidiPlan.MappedControlEvent copyControl(
             MidiPlan.MappedControlEvent source, long midiTick, int order) {
         return new MidiPlan.MappedControlEvent(
-                source.sourceTrack, source.sourceCommand, source.sourceName, source.rawTick,
-                source.midiChannel, source.logicalChannel, source.midiTrackIndex, midiTick,
-                source.status, source.data1, source.data2, source.patchWord, source.rawPatchWord,
-                source.latePatchEntry, source.patchSource, source.nativeMode, source.nativeBank,
-                source.nativeProgram, source.nativeKind, source.nativeSub, source.nativeValue,
-                source.hostMapping, source.hostMappingProxy, source.sourceOrder, order);
+                source, source.midiChannel, source.midiTrackIndex, midiTick,
+                source.data2, source.sourceName, order);
     }
 
     private static MidiPlan.CompiledNote copyNote(

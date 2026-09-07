@@ -51,10 +51,6 @@ public final class AudioPlaybackSource {
         return sampleRate;
     }
 
-    public long getLinearFrameCount() {
-        return linearFrameCount;
-    }
-
     public long getLinearDurationMicros() {
         return frameToMicrosCeil(linearFrameCount, sampleRate);
     }
@@ -224,14 +220,6 @@ public final class AudioPlaybackSource {
         long frames = whole * sampleRate;
         long fractional = remainder * sampleRate;
         return frames + (fractional + 999999L) / 1000000L;
-    }
-
-    static long frameToMicrosFloor(long frame, int sampleRate) {
-        if (frame <= 0L) return 0L;
-        long whole = frame / sampleRate;
-        long remainder = frame % sampleRate;
-        if (whole > Long.MAX_VALUE / 1000000L) return Long.MAX_VALUE;
-        return whole * 1000000L + (remainder * 1000000L) / sampleRate;
     }
 
     static long frameToMicrosCeil(long frame, int sampleRate) {

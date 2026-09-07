@@ -45,7 +45,6 @@ final class SwingPlayerController implements SwingPlayerView.Listener {
     private volatile PlaylistState.Entry currentEntry;
     private volatile PlaylistState.Entry pendingPlaybackEntry;
     private PlaylistState.Entry foregroundLoadEntry;
-    private boolean foregroundAutoPlay;
     private Path embeddedTempDirectory;
     private int embeddedTempSequence;
     private String playlistSearchQuery = "";
@@ -79,7 +78,7 @@ final class SwingPlayerController implements SwingPlayerView.Listener {
         }
         PlaylistState.Entry selectedEntry = view.selectedPlaylistEntry();
         if (selectedEntry != null && (currentEntry == null || selectedEntry != currentEntry)) {
-            openPlaylistEntry(selectedEntry, true);
+            openPlaylistEntry(selectedEntry);
             return;
         }
         if (currentTrack == null || !currentTrack.isPlayable()) {
@@ -120,7 +119,7 @@ final class SwingPlayerController implements SwingPlayerView.Listener {
     public void onPlaylistEntryActivated(PlaylistState.Entry entry) {
         if (entry != null) {
             view.selectPlaylistEntry(entry);
-            openPlaylistEntry(entry, true);
+            openPlaylistEntry(entry);
         }
     }
 
@@ -149,7 +148,7 @@ final class SwingPlayerController implements SwingPlayerView.Listener {
         }
     }
 
-    private void openPlaylistEntry(PlaylistState.Entry entry, boolean autoPlayAfterLoad) {
+    private void openPlaylistEntry(PlaylistState.Entry entry) {
         if (entry == null) {
             return;
         }
@@ -164,7 +163,7 @@ final class SwingPlayerController implements SwingPlayerView.Listener {
             stopRequested = true;
             return;
         }
-        loadTrack(entry.inputPath, autoPlayAfterLoad);
+        loadTrack(entry);
     }
 
     private PlaylistState.Entry ensurePlaylistEntry(Path inputPath) {
@@ -311,7 +310,7 @@ final class SwingPlayerController implements SwingPlayerView.Listener {
         }
         view.selectPlaylistEntry(firstEntry);
         if (autoPlayFirst) {
-            openPlaylistEntry(firstEntry, true);
+            openPlaylistEntry(firstEntry);
         }
     }
 
@@ -391,20 +390,16 @@ final class SwingPlayerController implements SwingPlayerView.Listener {
                     entry.durationText = "--:--";
                 }
                 if (entry == foregroundLoadEntry) {
-                    boolean autoPlay = foregroundAutoPlay;
                     foregroundLoadEntry = null;
-                    foregroundAutoPlay = false;
                     loading = false;
                     view.setLoading(false);
                     if (track != null) {
                         currentTrack = track;
-                        applyTrack(track);
-                        if (autoPlay) {
-                            startPlayback(track);
-                        }
+                        applyTrack(entry);
+                        startPlayback(track);
                     } else {
                         debugException("Load failed", failure);
-                        showLoadFailure(entry.inputPath);
+                        showLoadFailure(entry);
                     }
                 }
                 view.repaintPlaylist();
@@ -425,27 +420,16 @@ final class SwingPlayerController implements SwingPlayerView.Listener {
         refreshPlaylistView();
     }
 
-    private void loadTrack(final Path inputPath, final boolean autoPlayAfterLoad) {
-        if (inputPath == null) {
-            return;
-        }
-        final PlaylistState.Entry entry = ensurePlaylistEntry(inputPath);
-        if (entry == null) {
-            return;
-        }
+    private void loadTrack(PlaylistState.Entry entry) {
         view.selectPlaylistEntry(entry);
         foregroundLoadEntry = entry;
-        foregroundAutoPlay = autoPlayAfterLoad;
         if (entry.loadedTrack != null) {
             foregroundLoadEntry = null;
-            foregroundAutoPlay = false;
             loading = false;
             view.setLoading(false);
             currentTrack = entry.loadedTrack;
-            applyTrack(entry.loadedTrack);
-            if (autoPlayAfterLoad) {
-                startPlayback(entry.loadedTrack);
-            }
+            applyTrack(entry);
+            startPlayback(entry.loadedTrack);
             return;
         }
         loading = true;
@@ -455,28 +439,19 @@ final class SwingPlayerController implements SwingPlayerView.Listener {
         requestLoad(entry);
     }
 
-    private void applyTrack(ApplicationTrack track) {
-        if (track == null) {
-            return;
-        }
-        PlaylistState.Entry entry = playlist.find(track.inputPath);
-        if (entry != null) {
-            currentEntry = entry;
-            view.setActiveEntry(entry);
-            refreshPlaylistView();
-            view.selectPlaylistEntry(entry);
-        }
-        view.showTrack(track);
+    private void applyTrack(PlaylistState.Entry entry) {
+        currentEntry = entry;
+        view.setActiveEntry(entry);
+        refreshPlaylistView();
+        view.selectPlaylistEntry(entry);
+        view.showTrack(entry.loadedTrack);
         view.repaintPlaylist();
     }
 
-    private void showLoadFailure(Path inputPath) {
+    private void showLoadFailure(PlaylistState.Entry entry) {
         currentTrack = null;
-        PlaylistState.Entry entry = playlist.find(inputPath);
-        if (entry != null) {
-            entry.failed = true;
-            entry.durationText = "--:--";
-        }
+        entry.failed = true;
+        entry.durationText = "--:--";
         refreshPlaylistView();
         view.showLoadFailure();
         view.repaintPlaylist();
@@ -553,13 +528,13 @@ final class SwingPlayerController implements SwingPlayerView.Listener {
             view.setProgressValue(0);
             view.showPlaybackFailure();
             if (queuedEntry != null) {
-                openPlaylistEntry(queuedEntry, true);
+                openPlaylistEntry(queuedEntry);
             }
             return;
         }
         if (queuedEntry != null) {
             view.setProgressValue(0);
-            openPlaylistEntry(queuedEntry, true);
+            openPlaylistEntry(queuedEntry);
             return;
         }
         if (completedNaturally
@@ -578,7 +553,7 @@ final class SwingPlayerController implements SwingPlayerView.Listener {
         PlaylistState.Entry entry = playlist.get(nextIndex);
         if (entry != null) {
             view.selectPlaylistEntry(entry);
-            openPlaylistEntry(entry, true);
+            openPlaylistEntry(entry);
         }
     }
 

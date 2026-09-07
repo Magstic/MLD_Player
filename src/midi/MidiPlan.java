@@ -204,6 +204,24 @@ public final class MidiPlan {
         public final int sourceOrder;
         public final int order;
 
+        /** Copies provenance while changing the output fields used by plan transformations. */
+        MappedControlEvent(
+                MappedControlEvent source,
+                int midiChannel,
+                int midiTrackIndex,
+                long midiTick,
+                int data2,
+                String sourceName,
+                int order) {
+            this(
+                    source.sourceTrack, source.sourceCommand, sourceName, source.rawTick,
+                    midiChannel, source.logicalChannel, midiTrackIndex, midiTick,
+                    source.status, source.data1, data2, source.patchWord, source.rawPatchWord,
+                    source.latePatchEntry, source.patchSource, source.nativeMode, source.nativeBank,
+                    source.nativeProgram, source.nativeKind, source.nativeSub, source.nativeValue,
+                    source.hostMapping, source.hostMappingProxy, source.sourceOrder, order);
+        }
+
         public MappedControlEvent(
                 int sourceTrack,
                 int sourceCommand,

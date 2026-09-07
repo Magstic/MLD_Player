@@ -257,31 +257,8 @@ final class MidiLiveMixChaser {
             int order,
             String sourceName) {
         return new MidiPlan.MappedControlEvent(
-                original.sourceTrack,
-                original.sourceCommand,
-                sourceName,
-                original.rawTick,
-                original.midiChannel,
-                original.logicalChannel,
-                original.midiTrackIndex,
-                midiTick,
-                original.status,
-                original.data1,
-                clamp(0, 127, data2),
-                original.patchWord,
-                original.rawPatchWord,
-                original.latePatchEntry,
-                original.patchSource,
-                original.nativeMode,
-                original.nativeBank,
-                original.nativeProgram,
-                original.nativeKind,
-                original.nativeSub,
-                original.nativeValue,
-                original.hostMapping,
-                original.hostMappingProxy,
-                original.sourceOrder,
-                order);
+                original, original.midiChannel, original.midiTrackIndex, midiTick,
+                clamp(0, 127, data2), sourceName, order);
     }
 
     private static int clamp(int min, int max, int value) {

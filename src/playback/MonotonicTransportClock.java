@@ -49,8 +49,4 @@ final class MonotonicTransportClock {
         }
         return nanos / 1000L;
     }
-
-    boolean isRunning() {
-        return running;
-    }
 }

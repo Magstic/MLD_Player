@@ -19,6 +19,7 @@ public final class MidiSerializationAudit {
         auditSameTickOrdering();
         auditInfiniteLoopEncodingBoundary();
         auditSegmentPrimingAndClipping();
+        auditControlProvenanceThroughTransforms();
         System.out.println("MidiSerializationAudit: PASS");
     }
 
@@ -91,6 +92,56 @@ public final class MidiSerializationAudit {
         eq("primed program first", ShortMessage.PROGRAM_CHANGE, tickZero.get(0).getCommand());
         eq("boundary volume second", 7, tickZero.get(1).getData1());
         eq("clipped note-on last", ShortMessage.NOTE_ON, tickZero.get(2).getCommand());
+    }
+
+    private static void auditControlProvenanceThroughTransforms() {
+        MidiPlan.MappedControlEvent source = new MidiPlan.MappedControlEvent(
+                2, 0xE2, "level", 12, 4, 4, 5, 10L, ShortMessage.CONTROL_CHANGE, 7, 100,
+                0x123, 0x456, 17, "patch", 1, 2, 3, 4, 5, 6, "cc7_volume", true, 13, 14);
+        List<MidiPlan.MappedControlEvent> controls = new ArrayList<MidiPlan.MappedControlEvent>();
+        controls.add(new MidiPlan.MappedControlEvent(source, 4, 5, 0L, 20, "initial_level", 0));
+        controls.add(source);
+        List<MidiPlan.CompiledNote> notes = Collections.singletonList(new MidiPlan.CompiledNote(
+                2, 0, 4, 4, 5, 60, 100, 0, 10, 0L, 100L));
+        MidiLaneMapper.LaneTracker lanes = new MidiLaneMapper.LaneTracker();
+        lanes.observeActive(4);
+        List<MidiPlan.TempoPoint> tempos = tempos(tempo(0L, 500000));
+        MidiLaneMapper.Result mapped = MidiLaneMapper.finalizeOutput(
+                1, new int[] {4, 1, 2, 3}, lanes, notes, controls, tempos, noLoop(),
+                100L, new ArrayList<String>());
+        MidiPlan segment = new MidiPlanSegmenter().slice(
+                plan(noLoop(), tempos, mapped.notes, mapped.mappedControls, 100L), 10L, 40L, false);
+        eq("chased control count", 4, segment.mappedControls.size());
+        eqLong("chase rebased start", 0L, segment.mappedControls.get(0).midiTick);
+        eq("chase target value", 100, segment.mappedControls.get(3).data2);
+        for (MidiPlan.MappedControlEvent transformed : segment.mappedControls) {
+            eq("remapped channel", 0, transformed.midiChannel);
+            eq("remapped track", 1, transformed.midiTrackIndex);
+            eq("source track", source.sourceTrack, transformed.sourceTrack);
+            eq("source command", source.sourceCommand, transformed.sourceCommand);
+            eq("raw tick", source.rawTick, transformed.rawTick);
+            eq("logical channel", source.logicalChannel, transformed.logicalChannel);
+            eq("status", source.status, transformed.status);
+            eq("controller", source.data1, transformed.data1);
+            eq("patch word", source.patchWord, transformed.patchWord);
+            eq("raw patch word", source.rawPatchWord, transformed.rawPatchWord);
+            eq("late patch entry", source.latePatchEntry, transformed.latePatchEntry);
+            eq("native mode", source.nativeMode, transformed.nativeMode);
+            eq("native bank", source.nativeBank, transformed.nativeBank);
+            eq("native program", source.nativeProgram, transformed.nativeProgram);
+            eq("native kind", source.nativeKind, transformed.nativeKind);
+            eq("native sub", source.nativeSub, transformed.nativeSub);
+            eq("native value", source.nativeValue, transformed.nativeValue);
+            eq("source order", source.sourceOrder, transformed.sourceOrder);
+            if (!"level_live_mix_chase".equals(transformed.sourceName)
+                    || !source.patchSource.equals(transformed.patchSource)
+                    || !source.hostMapping.equals(transformed.hostMapping)
+                    || source.hostMappingProxy != transformed.hostMappingProxy) {
+                fail("control provenance", "metadata lost during chase/remap/slice");
+            }
+        }
+        eq("source channel unchanged", 4, source.midiChannel);
+        eqLong("source tick unchanged", 10L, source.midiTick);
     }
 
     private static MidiPlan plan(

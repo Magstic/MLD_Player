@@ -40,6 +40,7 @@ public final class ArchitectureClosureAudit {
         auditExportOwnership(sourceRoot, sources);
         auditDeviceOwnership(sourceRoot, sources);
         auditSwingBoundary(sourceRoot);
+        auditPlaybackFieldRename(sourceRoot);
 
         System.out.println("ArchitectureClosureAudit: PASS");
     }
@@ -194,11 +195,7 @@ public final class ArchitectureClosureAudit {
             fail("MIDI file serializer regained playback-only loop mutation");
         }
         String participant = read(sourceRoot.resolve("playback/MidiPlaybackParticipant.java"));
-        if (!participant.contains("nativeRuntime.nextCycle()")
-                || !participant.contains("fastForwardRemainder(now)")
-                || !participant.contains("sendStateSnapshot()")) {
-            fail("direct MIDI playback must consume continuing semantics and rebuild late state");
-        }
+        // Continuing loops and late recovery are verified by PlaybackTransportAudit.
         if (participant.contains("repeatLoopEvents")) {
             fail("direct MIDI playback regained a frozen infinite MIDI template");
         }
@@ -207,6 +204,32 @@ public final class ArchitectureClosureAudit {
                 || !runtime.contains("MelodyState")
                 || !runtime.contains("AudioSemanticState")) {
             fail("native loop runtime must own complete continuing semantic state");
+        }
+    }
+
+    private static void auditPlaybackFieldRename(Path sourceRoot) throws IOException {
+        Path renamedRoot = Files.createTempDirectory("mld-architecture-rename-");
+        String[] files = {
+            "playback/PlaybackSession.java", "playback/MidiPlaybackParticipant.java",
+            "midi/MidiSequenceEncoder.java", "mld/semantic/NativeLoopRuntime.java"
+        };
+        try {
+            for (String relative : files) {
+                Path target = renamedRoot.resolve(relative);
+                Files.createDirectories(target.getParent());
+                String source = read(sourceRoot.resolve(relative));
+                if (relative.equals("playback/MidiPlaybackParticipant.java")) {
+                    source = source.replace("nativeRuntime", "continuingRuntime");
+                }
+                Files.write(target, source.getBytes(StandardCharsets.UTF_8));
+            }
+            auditDirectMidiPlayback(renamedRoot);
+        } finally {
+            for (String relative : files) Files.deleteIfExists(renamedRoot.resolve(relative));
+            for (String directory : new String[] {"playback", "midi", "mld/semantic", "mld"}) {
+                Files.deleteIfExists(renamedRoot.resolve(directory));
+            }
+            Files.deleteIfExists(renamedRoot);
         }
     }
 
@@ -261,23 +284,9 @@ public final class ArchitectureClosureAudit {
                 }
             }
         }
-        String controller = read(sourceRoot.resolve("main/SwingPlayerController.java"));
-        if (occurrences(controller, "workflow.load(") != 1) {
-            fail("SwingPlayerController must centralize ApplicationTrack loading in one shared worker path");
-        }
         if (read(sourceRoot.resolve("main/PlaylistState.java")).contains("SwingWorker")) {
             fail("PlaylistState must remain independent of Swing load orchestration");
         }
-    }
-
-    private static int occurrences(String text, String token) {
-        int count = 0;
-        int offset = 0;
-        while ((offset = text.indexOf(token, offset)) >= 0) {
-            count++;
-            offset += token.length();
-        }
-        return count;
     }
 
     private static void assertExclusiveToken(

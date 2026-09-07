@@ -30,11 +30,6 @@ public final class Mfi8002Decoder {
         return (channels == 1 || channels == 2) && encodedBytes >= 81 * channels;
     }
 
-    static long decodedFrameCount(int encodedBytes, int sampleRate) {
-        if (encodedBytes < 0 || sampleRate <= 0 || OUTPUT_RATE % sampleRate != 0) return 0L;
-        return encodedBytes * 2L * (OUTPUT_RATE / sampleRate);
-    }
-
     public static DecodedSampledResource decode(
             byte[] encoded, int sampleRate, int codedBits, int channels) {
         if (encoded == null) throw new IllegalArgumentException("encoded == null");

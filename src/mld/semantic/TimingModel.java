@@ -16,16 +16,6 @@ public final class TimingModel {
         this.points = Collections.unmodifiableList(new ArrayList<Point>(points));
     }
 
-    public Point pointAt(int rawTick) {
-        Point current = points.get(0);
-        for (int i = 1; i < points.size(); i++) {
-            Point next = points.get(i);
-            if (next.rawTick > rawTick) break;
-            current = next;
-        }
-        return current;
-    }
-
     public long rawTickToMicros(int rawTick) {
         if (rawTick <= 0) return 0L;
         long micros = 0;

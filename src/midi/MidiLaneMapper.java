@@ -13,11 +13,7 @@ import java.util.List;
  */
 final class MidiLaneMapper {
     private static final int MIDI_CHANNEL_COUNT = 16;
-    private static final boolean PSM_APPLY_WRITER_EXPORT_OUTPUT_REMAP = true;
     private static final int PSM_GM_DRUM_CHANNEL = 9;
-    private static final boolean PSM_DEFAULT_GSMODE = false;
-    private static final boolean PSM_DEFAULT_DRAMBANKFLG = false;
-    private static final int PSM_DEFAULT_AUTHORITATIVE_SPECIAL_MASK = 1 << PSM_GM_DRUM_CHANNEL;
 
     private MidiLaneMapper() {
     }
@@ -45,10 +41,6 @@ final class MidiLaneMapper {
                 channelAssignments,
                 outputLanePlan,
                 finalTicks);
-    }
-
-    static LaneTracker newDefaultLaneTracker() {
-        return LaneTracker.seededFreshDefaultPlayPath();
     }
 
     static int remapMidiChannel(int logicalChannel, int[] outputChannelMap) {
@@ -97,9 +89,9 @@ final class MidiLaneMapper {
             int midiChannel = remapMidiChannel(logicalChannel, outputChannelMap);
             plan.add(new MidiPlan.OutputLaneAudit(
                     logicalChannel,
-                    outputLaneTracker != null && outputLaneTracker.isActive(logicalChannel),
-                    outputLaneTracker != null && outputLaneTracker.hasAuthoritativeMask(),
-                    outputLaneTracker != null && outputLaneTracker.isAuthoritativeSpecial(logicalChannel),
+                    outputLaneTracker.isActive(logicalChannel),
+                    true,
+                    outputLaneTracker.isAuthoritativeSpecial(logicalChannel),
                     midiChannel,
                     midiChannel != logicalChannel));
         }
@@ -108,12 +100,7 @@ final class MidiLaneMapper {
 
     private static int[] buildHostOutputChannelMap(LaneTracker outputLaneTracker) {
         int[] outputChannelMap = createIdentityMap(MIDI_CHANNEL_COUNT);
-        if (!PSM_APPLY_WRITER_EXPORT_OUTPUT_REMAP || outputLaneTracker == null || !outputLaneTracker.hasAuthoritativeMask()) {
-            return outputChannelMap;
-        }
-        if (outputLaneTracker.usesIdentityMap()) {
-            return outputChannelMap;
-        }
+        // The supported PSM profile reserves channel 9 and compacts ordinary lanes.
         int nextMelodicChannel = 0;
         for (int logicalChannel = 0; logicalChannel < MIDI_CHANNEL_COUNT; logicalChannel++) {
             if (!outputLaneTracker.isActive(logicalChannel)) {
@@ -124,7 +111,7 @@ final class MidiLaneMapper {
                 continue;
             }
             outputChannelMap[logicalChannel] = nextMelodicChannel;
-            nextMelodicChannel = nextSequentialOutputLane(nextMelodicChannel, outputLaneTracker.reservesDrumOutputLane());
+            nextMelodicChannel = nextSequentialOutputLane(nextMelodicChannel);
         }
         return outputChannelMap;
     }
@@ -167,40 +154,17 @@ final class MidiLaneMapper {
         for (MidiPlan.MappedControlEvent control : mappedControls) {
             int midiChannel = remapMidiChannel(control.midiChannel, outputChannelMap);
             remapped.add(new MidiPlan.MappedControlEvent(
-                    control.sourceTrack,
-                    control.sourceCommand,
-                    control.sourceName,
-                    control.rawTick,
-                    midiChannel,
-                    control.logicalChannel,
-                    midiChannel + 1,
-                    control.midiTick,
-                    control.status,
-                    control.data1,
-                    control.data2,
-                    control.patchWord,
-                    control.rawPatchWord,
-                    control.latePatchEntry,
-                    control.patchSource,
-                    control.nativeMode,
-                    control.nativeBank,
-                    control.nativeProgram,
-                    control.nativeKind,
-                    control.nativeSub,
-                    control.nativeValue,
-                    control.hostMapping,
-                    control.hostMappingProxy,
-                    control.sourceOrder,
-                    control.order));
+                    control, midiChannel, midiChannel + 1, control.midiTick,
+                    control.data2, control.sourceName, control.order));
         }
         return remapped;
     }
 
-    private static int nextSequentialOutputLane(int current, boolean reserveDrumOutputLane) {
+    private static int nextSequentialOutputLane(int current) {
         if (current >= MIDI_CHANNEL_COUNT - 1) {
             return MIDI_CHANNEL_COUNT - 1;
         }
-        if (reserveDrumOutputLane && current == (PSM_GM_DRUM_CHANNEL - 1)) {
+        if (current == (PSM_GM_DRUM_CHANNEL - 1)) {
             return current + 2;
         }
         return current + 1;
@@ -248,30 +212,7 @@ final class MidiLaneMapper {
     }
 
     static final class LaneTracker {
-        private final boolean authoritativeMaskKnown;
-        private final boolean identityMap;
-        private final boolean reserveDrumOutputLane;
         private int activeMask = 0;
-        private final int authoritativeSpecialMask;
-
-        private LaneTracker(
-                boolean authoritativeMaskKnown,
-                boolean identityMap,
-                boolean reserveDrumOutputLane,
-                int authoritativeSpecialMask) {
-            this.authoritativeMaskKnown = authoritativeMaskKnown;
-            this.identityMap = identityMap;
-            this.reserveDrumOutputLane = reserveDrumOutputLane;
-            this.authoritativeSpecialMask = authoritativeSpecialMask;
-        }
-
-        static LaneTracker seededFreshDefaultPlayPath() {
-            return new LaneTracker(
-                    true,
-                    PSM_DEFAULT_GSMODE,
-                    !PSM_DEFAULT_DRAMBANKFLG,
-                    PSM_DEFAULT_AUTHORITATIVE_SPECIAL_MASK);
-        }
 
         void observeActive(int logicalChannel) {
             if (logicalChannel < 0 || logicalChannel >= MIDI_CHANNEL_COUNT) {
@@ -286,22 +227,8 @@ final class MidiLaneMapper {
                     && ((activeMask >>> logicalChannel) & 1) != 0;
         }
 
-        boolean hasAuthoritativeMask() {
-            return authoritativeMaskKnown;
-        }
-
         boolean isAuthoritativeSpecial(int logicalChannel) {
-            return logicalChannel >= 0
-                    && logicalChannel < MIDI_CHANNEL_COUNT
-                    && ((authoritativeSpecialMask >>> logicalChannel) & 1) != 0;
-        }
-
-        boolean usesIdentityMap() {
-            return identityMap;
-        }
-
-        boolean reservesDrumOutputLane() {
-            return reserveDrumOutputLane;
+            return logicalChannel == PSM_GM_DRUM_CHANNEL;
         }
     }
 }
