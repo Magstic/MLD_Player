@@ -22,8 +22,10 @@ public final class AudioSemanticAudit {
         auditSampledResourceDefaults();
         auditSampledResourceControls();
         auditUnsupportedRendererDiagnostics();
+        auditVerifiedTwoBitActiveAdatProfile();
         auditStrictVerifiedRendererProfile();
         auditSharedCompactSlotState();
+        auditResolvedRendererActions();
         System.out.println("AudioSemanticAudit: PASS");
     }
 
@@ -197,10 +199,50 @@ public final class AudioSemanticAudit {
                 audio, 0x106, AudioProgram.ActionKind.SLOT_LOAD_AND_START);
         eq("2-bit 8001 format", 4, twoBit.formatCode);
         eq("2-bit 8001 coded bits", 2, twoBit.codedBits);
-        same("2-bit renderer unsupported",
-                AudioProgram.RendererSupport.RECOGNIZED_UNSUPPORTED,
+        same("2-bit renderer support",
+                AudioProgram.RendererSupport.VERIFIED_8001_2BIT,
                 twoBit.rendererSupport);
-        containsDiagnostic(audio, "AUDIO_RENDERER_8001_2BIT_UNSUPPORTED");
+    }
+
+
+    private static void auditVerifiedTwoBitActiveAdatProfile() {
+        int[] rates = {8000, 16000, 32000};
+        int[] rateCodes = {0x08, 0x10, 0x20};
+        for (int r = 0; r < rates.length; r++) {
+            for (int channels = 1; channels <= 2; channels++) {
+                List<TopLevelChunk> chunks = new ArrayList<TopLevelChunk>();
+                chunks.add(chunk("ainf", 13, 2, "header", new byte[] {0x01}));
+                chunks.add(chunk("adat", 42, 4, "resource", new byte[] {
+                        0x00, 0x0B, (byte)0x81, 0x03,
+                        'a', 'd', 'p', 'm', 0x00, 0x03,
+                        (byte)rateCodes[r], 0x02, (byte)channels,
+                        0x12, 0x34, 0x56, 0x78
+                }));
+                MldDocument document = new MldDocument(
+                        new byte[0], "melo", 0, 32, 0, 0, 1, 0, 0,
+                        Collections.<Long>emptyList(), chunks, Collections.emptyList());
+                NativeProgram program = compile(
+                        document,
+                        Collections.<TrackEvent>singletonList(resource(0, 0, 0x00, 0x00, 0x3C)),
+                        0);
+                AudioProgram.AudioAction start = null;
+                for (AudioProgram.AudioAction action : program.audio.actions) {
+                    if (action.kind == AudioProgram.ActionKind.RESOURCE_START) start = action;
+                }
+                if (start == null) fail("2-bit active adat", "missing start action");
+                same("2-bit active adat support " + rates[r] + "/" + channels,
+                        AudioProgram.RendererSupport.VERIFIED_8001_2BIT,
+                        start.rendererSupport);
+                eq("2-bit active adat rate", rates[r], start.sampleRate);
+                eq("2-bit active adat bits", 2, start.codedBits);
+                eq("2-bit active adat channels", channels, start.channelCount);
+                for (Diagnostic diagnostic : program.audio.diagnostics) {
+                    if ("AUDIO_RENDERER_RESOURCE_ADAT_UNSUPPORTED".equals(diagnostic.code)) {
+                        fail("2-bit active adat diagnostic", diagnostic.message);
+                    }
+                }
+            }
+        }
     }
 
     private static void auditSharedCompactSlotState() {
@@ -400,6 +442,73 @@ public final class AudioSemanticAudit {
                 slot(cached8000OpSharedProgram.audio, 0).audioType);
     }
 
+    private static void auditResolvedRendererActions() {
+        NativeProgram direct = compile(
+                emptyDocument(),
+                Collections.<TrackEvent>singletonList(md(0, 0,
+                        0x71, 0x84,
+                        0x00, 0x44, 0x00,
+                        0x00, 0x00, 0x00, 0x01,
+                        0x12)),
+                0);
+        eq("direct renderer action count", 2, direct.audio.executionActions.size());
+        same("direct load releases old slot",
+                AudioProgram.ActionKind.SLOT_RELEASE, direct.audio.executionActions.get(0).kind);
+        AudioProgram.AudioAction directStart = direct.audio.executionActions.get(1);
+        same("direct start is resolved",
+                AudioProgram.ActionKind.SLOT_START, directStart.kind);
+        same("direct start carries loaded type",
+                AudioProgram.AudioType.MFI_8001, directStart.audioType);
+        eqBytes("direct start carries loaded payload",
+                new byte[] {0x12}, directStart.copyEncodedPayload());
+
+        List<TrackEvent> pendingAppend = new ArrayList<TrackEvent>();
+        pendingAppend.add(md(0, 0,
+                0x71, 0x84,
+                0x00, 0x4C, 0x01,
+                0x00, 0x00, 0x00, 0x04,
+                0x12));
+        pendingAppend.add(md(1, 1,
+                0x71, 0x84,
+                0x00, 0x0C, 0x00,
+                0x00, 0x00, 0x00, 0x01,
+                0x34));
+        NativeProgram appended = compile(emptyDocument(), pendingAppend, 1);
+        eq("pending append renderer action count", 2, appended.audio.executionActions.size());
+        same("pending cached load releases once",
+                AudioProgram.ActionKind.SLOT_RELEASE, appended.audio.executionActions.get(0).kind);
+        AudioProgram.AudioAction appendedStart = appended.audio.executionActions.get(1);
+        same("pending op1 resolves to start",
+                AudioProgram.ActionKind.SLOT_START, appendedStart.kind);
+        eqBytes("pending op1 start sees appended payload",
+                new byte[] {0x12, 0x34}, appendedStart.copyEncodedPayload());
+        eqLong("pending op1 start restores cached duration",
+                appended.audio.actions.get(0).durationMs, appendedStart.durationMs);
+
+        List<TrackEvent> typeMismatch = new ArrayList<TrackEvent>();
+        typeMismatch.add(compact8002Load(0, 0, 0, 8000, 81));
+        typeMismatch.add(md(1, 1,
+                0x71, 0x84,
+                0x00, 0x44, 0x00,
+                0x00, 0x00, 0x00, 0x01,
+                0x55));
+        NativeProgram mismatch = compile(emptyDocument(), typeMismatch, 1);
+        eq("type mismatch renderer action count", 1, mismatch.audio.executionActions.size());
+        same("compact load emits release",
+                AudioProgram.ActionKind.SLOT_RELEASE, mismatch.audio.executionActions.get(0).kind);
+        same("type mismatch preserves compact slot",
+                AudioProgram.AudioType.MFI_8002, slot(mismatch.audio, 0).audioType);
+
+        NativeProgram missingCompactStart = compile(
+                emptyDocument(),
+                Collections.<TrackEvent>singletonList(md(0, 0,
+                        0x11, 0x01, 0xF1, 0x03,
+                        0x00, 0x7F)),
+                0);
+        eq("missing compact slot produces no render action",
+                0, missingCompactStart.audio.executionActions.size());
+    }
+
     private static void auditStrictVerifiedRendererProfile() {
         NativeProgram flaggedProgram = compile(
                 emptyDocument(),
@@ -410,10 +519,10 @@ public final class AudioSemanticAudit {
                         0x12)),
                 0);
         AudioProgram.AudioAction flagged = flaggedProgram.audio.actions.get(0);
-        same("nonzero 71:84 flags are not renderer-ready",
-                AudioProgram.RendererSupport.RECOGNIZED_UNSUPPORTED,
+        same("71:84 control bit0 renderer support",
+                AudioProgram.RendererSupport.VERIFIED_8001_4BIT,
                 flagged.rendererSupport);
-        containsDiagnostic(flaggedProgram.audio, "AUDIO_RENDERER_8001_PROFILE_UNSUPPORTED");
+        eq("71:84 control bit0", 1, flagged.controlFlag);
 
         NativeProgram inlineProgram = compile(
                 emptyDocument(),
@@ -423,8 +532,8 @@ public final class AudioSemanticAudit {
                         0x12)),
                 0);
         AudioProgram.AudioAction inline = inlineProgram.audio.actions.get(0);
-        same("non-71:84 4-bit 8001 remains typed only",
-                AudioProgram.RendererSupport.RECOGNIZED_UNSUPPORTED,
+        same("inline 0x109 renderer support",
+                AudioProgram.RendererSupport.VERIFIED_8001_4BIT,
                 inline.rendererSupport);
         isTrue("inline 0x109 retains native runtime phase gate", inline.phaseGated);
         same("inline 0x109 layered effect is phase-gated",
@@ -473,8 +582,8 @@ public final class AudioSemanticAudit {
                 0);
         AudioProgram.AudioAction ignoredUpperBits = ignoredUpperBitsProgram.audio.actions.get(0);
         eq("native control bit0 ignores upper bits", 0, ignoredUpperBits.controlFlag);
-        same("raw-byte-zero renderer boundary remains fail-closed",
-                AudioProgram.RendererSupport.RECOGNIZED_UNSUPPORTED,
+        same("upper control bits preserve renderer support",
+                AudioProgram.RendererSupport.VERIFIED_8001_4BIT,
                 ignoredUpperBits.rendererSupport);
 
         NativeProgram channel3Program = compile(
@@ -548,6 +657,20 @@ public final class AudioSemanticAudit {
     private static TopLevelChunk chunk(
             String id, int offset, int lengthFieldBytes, String category, byte[] payload) {
         return new TopLevelChunk(id, offset, payload.length, lengthFieldBytes, category, payload, null);
+    }
+
+    private static MachineDependentEvent compact8002Load(
+            int eventIndex, int rawTick, int slot, int sampleRate, int encodedLength) {
+        int[] bytes = new int[8 + encodedLength];
+        bytes[0] = 0x11;
+        bytes[1] = 0x01;
+        bytes[2] = 0xF0;
+        bytes[3] = 0x07;
+        bytes[4] = slot;
+        bytes[5] = 0x00;
+        bytes[6] = (sampleRate >>> 8) & 0xFF;
+        bytes[7] = sampleRate & 0xFF;
+        return md(eventIndex, rawTick, bytes);
     }
 
     private static MachineDependentEvent md(int eventIndex, int rawTick, int... bytes) {

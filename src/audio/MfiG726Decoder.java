@@ -1,32 +1,59 @@
 package audio;
 
-/** MFiAudio codec 0x8001 decoder for the 4-bit legacy sampled-audio path. */
+/** MFiAudio codec 0x8001 G.726 decoder for verified 2-bit and 4-bit sampled-audio profiles. */
 public final class MfiG726Decoder {
-    private static final int[] IQUANT = {
-        -32768, 4, 135, 213, 273, 323, 373, 425,
-        425, 373, 323, 273, 213, 135, 4, -32768
-    };
-    private static final int[] W = {
-        -12, 18, 41, 64, 112, 198, 355, 1122,
-        1122, 355, 198, 112, 64, 41, 18, -12
-    };
-    private static final int[] F = {
-        0, 0, 0, 1, 1, 1, 3, 7,
-        7, 3, 1, 1, 1, 0, 0, 0
-    };
+    private static final CodecProfile PROFILE_4BIT = new CodecProfile(
+            0x0F,
+            3,
+            new int[] {
+                -32768, 4, 135, 213, 273, 323, 373, 425,
+                425, 373, 323, 273, 213, 135, 4, -32768
+            },
+            new int[] {
+                -12, 18, 41, 64, 112, 198, 355, 1122,
+                1122, 355, 198, 112, 64, 41, 18, -12
+            },
+            new int[] {
+                0, 0, 0, 1, 1, 1, 3, 7,
+                7, 3, 1, 1, 1, 0, 0, 0
+            });
+
+    /* MFiAudio.dll 2-bit G.726 tables. W values are signed 12-bit 0xFEA/0x1B7. */
+    private static final CodecProfile PROFILE_2BIT = new CodecProfile(
+            0x03,
+            1,
+            new int[] {116, 365, 365, 116},
+            new int[] {-22, 439, 439, -22},
+            new int[] {0, 7, 7, 0});
 
     private MfiG726Decoder() {}
 
-    /** Decodes one independent 32 kbit/s G.726 stream, low nibble first. */
+    /** Decodes one independent 4-bit G.726 stream, low nibble first. */
     public static short[] decode4BitLittleEndian(byte[] encoded) {
         if (encoded == null) throw new IllegalArgumentException("encoded == null");
-        Decoder decoder = new Decoder();
+        Decoder decoder = new Decoder(PROFILE_4BIT);
         short[] output = new short[encoded.length * 2];
         int out = 0;
         for (int i = 0; i < encoded.length; i++) {
             int value = encoded[i] & 0xff;
-            output[out++] = decoder.decodeCode(value & 0x0f);
-            output[out++] = decoder.decodeCode((value >>> 4) & 0x0f);
+            output[out++] = decoder.decodeCode(value);
+            output[out++] = decoder.decodeCode(value >>> 4);
+        }
+        return output;
+    }
+
+    /** Decodes one independent 2-bit G.726 stream, four low-to-high codewords per byte. */
+    public static short[] decode2BitLittleEndian(byte[] encoded) {
+        if (encoded == null) throw new IllegalArgumentException("encoded == null");
+        Decoder decoder = new Decoder(PROFILE_2BIT);
+        short[] output = new short[encoded.length * 4];
+        int out = 0;
+        for (int i = 0; i < encoded.length; i++) {
+            int value = encoded[i] & 0xff;
+            output[out++] = decoder.decodeCode(value);
+            output[out++] = decoder.decodeCode(value >>> 2);
+            output[out++] = decoder.decodeCode(value >>> 4);
+            output[out++] = decoder.decodeCode(value >>> 6);
         }
         return output;
     }
@@ -43,7 +70,29 @@ public final class MfiG726Decoder {
         }
     }
 
+    private static final class CodecProfile {
+        final int codeMask;
+        final int signShift;
+        final int[] inverseQuantizer;
+        final int[] scaleAdaptation;
+        final int[] speedControl;
+
+        CodecProfile(
+                int codeMask,
+                int signShift,
+                int[] inverseQuantizer,
+                int[] scaleAdaptation,
+                int[] speedControl) {
+            this.codeMask = codeMask;
+            this.signShift = signShift;
+            this.inverseQuantizer = inverseQuantizer;
+            this.scaleAdaptation = scaleAdaptation;
+            this.speedControl = speedControl;
+        }
+    }
+
     private static final class Decoder {
+        private final CodecProfile profile;
         private final Float11[] sr = { new Float11(), new Float11() };
         private final Float11[] dq = {
             new Float11(), new Float11(), new Float11(),
@@ -63,8 +112,12 @@ public final class MfiG726Decoder {
         private int sez;
         private int y = 544;
 
+        Decoder(CodecProfile profile) {
+            this.profile = profile;
+        }
+
         short decodeCode(int code) {
-            code &= 0x0f;
+            code &= profile.codeMask;
 
             int dqValue = inverseQuantize(code);
             int ylInteger = yl >> 15;
@@ -72,7 +125,7 @@ public final class MfiG726Decoder {
             int threshold2 = ylInteger > 9 ? (31 << 10) : (32 + ylFraction) << ylInteger;
             int transition = td == 1 && dqValue > ((3 * threshold2) >> 2) ? 1 : 0;
 
-            int sign = code >> 3;
+            int sign = code >> profile.signShift;
             if (sign != 0) dqValue = -dqValue;
 
             int reconstructed = se + dqValue;
@@ -106,8 +159,8 @@ public final class MfiG726Decoder {
             dq[0].sign = sign;
 
             td = a[1] < -11776 ? 1 : 0;
-            dms += (F[code] << 4) + ((-dms) >> 5);
-            dml += (F[code] << 4) + ((-dml) >> 7);
+            dms += (profile.speedControl[code] << 4) + ((-dms) >> 5);
+            dml += (profile.speedControl[code] << 4) + ((-dml) >> 7);
 
             if (transition != 0) {
                 ap = 256;
@@ -118,7 +171,7 @@ public final class MfiG726Decoder {
                 }
             }
 
-            yu = clip(y + W[code] + ((-y) >> 5), 544, 5120);
+            yu = clip(y + profile.scaleAdaptation[code] + ((-y) >> 5), 544, 5120);
             yl += yu + ((-yl) >> 6);
             int al = ap >= 256 ? 64 : ap >> 2;
             y = (yl + (yu - (yl >> 6)) * al) >> 6;
@@ -139,7 +192,7 @@ public final class MfiG726Decoder {
         }
 
         private int inverseQuantize(int code) {
-            int dql = IQUANT[code] + (y >> 2);
+            int dql = profile.inverseQuantizer[code] + (y >> 2);
             int exponent = (dql >> 7) & 15;
             int mantissa = 128 + (dql & 127);
             return dql < 0 ? 0 : ((mantissa << exponent) >> 7);

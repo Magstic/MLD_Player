@@ -201,35 +201,20 @@ The layered parser consumes its payload and stores no dedicated metadata object.
 
 ### Selector `0x81` / Type `0x8001`
 
-On-disk contract:
+- selector `0x81` selects MFiAudio type `0x8001`
+- selector flag bit `0x04` is clear on the sampled-resource playback path
+- selector-local `adpm` byte `0` gives source rate in kHz
+- selector-local `adpm` byte `1` gives coded bit depth
+- selector-local `adpm` byte `2` low3 gives channel count
+- accepted source rates: `8000`, `16000`, `32000` Hz
+- accepted coded depths: `2`, `4`
+- accepted channel counts: `1`, `2`
+- bytes following the selector section are coded audio payload
+- `0x7F 00` starts the active resource
+- `0x7F 01` stops matching active voices
+- `0x7F 80/81` update sampled logical-channel level/pan
+- `0x7F 90` updates sampled route/config state
 
-- selector `0x81` feeds the audio-side `0x8001` family
-- accepted input window:
-  - sample rate `8000`, `16000`, or `32000`
-  - coded bit depth `2` or `4`
-  - channels `1` or `2`
-- packed-code extraction is low-bit-first:
-  - `2-bit`: four codes per byte
-  - `4-bit`: two codes per byte
-- linear output clamps reconstructed G.726 to `[-8192,8191]`, then expands by `<<2`; predictor state uses the unclamped reconstruction
-- mono decodes one compressed stream and duplicates the exported result to left
-  and right
-- stereo splits the blob into two contiguous half-streams, decodes them
-  independently, then uses them as left and right
-- backend-native working format is fixed `32000 Hz`, `32-bit`, `2-channel`
-
-Production ordinary sampled-SFX profile:
-
-- active top-level `adat` selected through `ainf`
-- selector `0x81`
-- selector flag `0x04` clear
-- coded bit depth `4`
-- sample rate `8000`, `16000`, or `32000`
-- channel count `1` or `2`
-- output route `0`
-- final stream `32000 Hz`, PCM16, stereo
-
-`7F:00` starts the typed resource. `7F:01` stops active voices matching the same logical sampled channel and resource index without unloading the resource. `7F:80` and `7F:81` update its logical-channel level and pan. `7F:90` selects its sampled route.
 
 ## Track Event Stream
 
@@ -696,33 +681,33 @@ Both handlers maintain slot state in the native player. Layered families also pe
 
 ### `0x8001` Slot Handlers
 
-Common body header for handlers `0x109` and `0x106`:
+Handlers `0x109` and `0x106` use this common header:
 
-- byte 0: channel high2, slot low6
-- byte 1: operation high2, format low6
-- byte 2: only bit0 is used; bits7..1 are ignored
+- byte `0`: channel high2, slot low6
+- byte `1`: operation high2, format low6
+- byte `2`: control bit0; bits7..1 are ignored
 
 Format table:
 
-| format | sample rate | coded bits |
-|---:|---:|---:|
-| `4` | `8000` | `2` |
-| `5` | `8000` | `4` |
-| `12` | `16000` | `2` |
-| `13` | `16000` | `4` |
-| `20` | `32000` | `2` |
-| `21` | `32000` | `4` |
+| format | sample rate | coded bits | channels |
+|---:|---:|---:|---:|
+| `4` | `8000` | `2` | `1` |
+| `5` | `8000` | `4` | `1` |
+| `12` | `16000` | `2` | `1` |
+| `13` | `16000` | `4` | `1` |
+| `20` | `32000` | `2` | `1` |
+| `21` | `32000` | `4` | `1` |
 
-Operation model:
+Operations:
 
-- `0`: load / refresh
-- `1`: load / refresh, then enter the native start gate
-- `2`: enter the native start gate with the existing slot
-- `3`: ignore
+- `0`: load/refresh
+- `1`: load/refresh and enter the start gate
+- `2`: enter the start gate using the existing slot
+- `3`: no action
 
-Handler `0x109` uses every byte after the three-byte header as coded payload. `durationByteCount` equals the coded payload length.
+Handler `0x109` uses the remaining body as coded payload and duration-byte count.
 
-Handler `0x106` reads BE32 `durationByteCount`; coded payload is the entire body remainder after that field. The BE32 value affects duration only.
+Handler `0x106` reads BE32 `durationByteCount`; the remaining body is the coded payload.
 
 Native duration:
 
@@ -730,9 +715,6 @@ Native duration:
 - `sampleCount = (durationByteCount * samplesPerByte) mod 2^32`
 - `durationMs = floor(sampleCount * 1000 / sampleRate + 0.5)`
 
-Layered `0x109` and `0x106` both return before parsing when `context+0x1C14 >= 0x30340000` or `arg6 == 1`. When operation `1` reaches MFiAudio start, `startLevel=127` and the voice limit is `min(decodedFrames,durationMs*32)` at 32 kHz; the decoded cache remains complete. Monolithic families keep slot state without layered audio calls.
-
-Current renderer coverage is descriptor `23` (`71 84`), operation `1`, raw control byte `0`, mono 4-bit format `5/13/21`. Raw-byte-zero is a fail-closed project boundary, not a `lib003` rule. Other machine `0x8001` forms remain unsupported until enabled separately. The ordinary active-`adat` profile is selector `0x81`.
 
 ### Compact `0x8002` Load State
 
@@ -745,8 +727,6 @@ Body:
 - byte 1 bit7: channel-count selector; `0` = mono, `1` = stereo
 - bytes 2..3: BE16 source sample rate
 - remaining bytes: 4-bit AWC2 payload
-
-The renderer supports only native-length-valid 4-bit AWC2 at `4000/8000/16000/32000 Hz`, mono or stereo. Native `awc2` requires at least 81 payload bytes for mono and 162 for stereo. Other source rates fail closed by project policy, not by native format validation.
 
 Native duration is `round((2*codedPayloadLength)*1000/sampleRate)`, independent of channel count. In stereo, each coded byte maps its low nibble to channel 0 and high nibble to channel 1, with independent codec state. For `N` coded bytes, AWC2 fills the first `N` frames of MFiAudio's zero-initialized `2N`-frame source timeline; the second half remains zero. MFiAudio converts that PCM to its fixed 32-kHz cache with the native 8-tap polyphase FIR.
 
@@ -769,12 +749,12 @@ Without pending state, `0x109/0x106` with bit0 `1` and incoming operation other 
 
 `11 01 F1` uses handler `0x401`. The first body byte supplies the native logical channel directly from high2 and opcode from low4; MLD track index is not added to the channel.
 
-- `3/4`: low5 slot + low7 level; start the cached slot with its cached duration, independent of whether the current cache is verified `0x8002` or a later verified `0x8001` replacement
+- `3/4`: low5 slot + low7 level; start the cached slot with its cached duration
 - `5`: low5 slot; stop the matching channel+slot voice without unloading the slot
 - `6`: skip one byte, then pan; `0..63 -> 2*value`, `0x80/0xFF -> 64`; other raw values are no-op
 - `7`: separate backend control and remains outside sampled rendering
 
-`31 10` handler `0x402` is a second entry to the same backend: code `7` delegates to `0x400` load, `9/15` start, `10` stop, and `11` pan with the same channel/slot/value rules. Code `12` remains outside the verified sampled renderer.
+`31 10` handler `0x402` uses code `7` for `0x400` load, `9/15` for start, `10` for stop, `11` for pan, and `12` for backend control `+0x48`.
 
 Each MFiAudio backend instance has 16 active-voice entries. Start uses the first inactive entry or, when full, steals the oldest voice (the smallest start serial) at the new start time. Repeated starts of the same channel/slot remain separate voices until stopped, released, completed, or stolen.
 

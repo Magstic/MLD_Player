@@ -211,9 +211,40 @@ public final class NativeLoopRuntime {
                 null,
                 rawLength,
                 Collections.<String>emptyList());
-        List<AudioProgram.AudioAction> actions = new ArrayList<AudioProgram.AudioAction>();
-        for (AudioProgram.AudioAction action : audio.actions) {
-            actions.add(new AudioProgram.AudioAction(
+        List<AudioProgram.AudioAction> actions = shiftAudioActions(audio.actions, rawStart);
+        List<AudioProgram.AudioAction> executionActions = shiftAudioActions(audio.executionActions, rawStart);
+        AudioProgram normalizedAudio = new AudioProgram(
+                audio.resourceCatalog,
+                audio.initialChannelConfigs,
+                audio.resourceEvents,
+                actions,
+                executionActions,
+                audio.channelStates,
+                audio.slotStates,
+                audio.configBindings,
+                audio.routeState,
+                audio.resourceLevel,
+                audio.resourcePan,
+                audio.globalSampledLevel,
+                audio.diagnostics);
+        return new NativeProgram(
+                sourceTrackCount,
+                timing,
+                noLoop,
+                melody,
+                normalizedAudio,
+                null,
+                rawLength,
+                rawLength,
+                Collections.<String>emptyList(),
+                Collections.<Diagnostic>emptyList());
+    }
+
+    private static List<AudioProgram.AudioAction> shiftAudioActions(
+            List<AudioProgram.AudioAction> source, int rawStart) {
+        List<AudioProgram.AudioAction> result = new ArrayList<AudioProgram.AudioAction>();
+        for (AudioProgram.AudioAction action : source) {
+            result.add(new AudioProgram.AudioAction(
                     action.order,
                     action.sourceKind,
                     action.kind,
@@ -244,30 +275,7 @@ public final class NativeLoopRuntime {
                     action.monolithicEffect,
                     action.copyEncodedPayload()));
         }
-        AudioProgram normalizedAudio = new AudioProgram(
-                audio.resourceCatalog,
-                audio.initialChannelConfigs,
-                audio.resourceEvents,
-                actions,
-                audio.channelStates,
-                audio.slotStates,
-                audio.configBindings,
-                audio.routeState,
-                audio.resourceLevel,
-                audio.resourcePan,
-                audio.globalSampledLevel,
-                audio.diagnostics);
-        return new NativeProgram(
-                sourceTrackCount,
-                timing,
-                noLoop,
-                melody,
-                normalizedAudio,
-                null,
-                rawLength,
-                rawLength,
-                Collections.<String>emptyList(),
-                Collections.<Diagnostic>emptyList());
+        return result;
     }
 
     /** One semantically executed cycle with absolute transport timing. */

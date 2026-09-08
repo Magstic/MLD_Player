@@ -2,7 +2,7 @@ package audio;
 
 import java.util.Arrays;
 
-/** Exact legacy MFiAudio codec 0x8001 wrapper for the verified 4-bit G.726LE profiles. */
+/** Exact MFiAudio codec 0x8001 wrapper for verified G.726LE profiles. */
 public final class Mfi8001Decoder {
     private static final int OUTPUT_RATE = 32000;
     private static final int Q12_UNITY_MINUS_ONE = 4095;
@@ -28,9 +28,19 @@ public final class Mfi8001Decoder {
     private Mfi8001Decoder() {}
 
     public static boolean supports(int sampleRate, int codedBits, int channels) {
-        return codedBits == 4
+        return (codedBits == 2 || codedBits == 4)
                 && (sampleRate == 8000 || sampleRate == 16000 || sampleRate == 32000)
                 && (channels == 1 || channels == 2);
+    }
+
+    static long decodedFrameCount(
+            int encodedBytes, int sampleRate, int codedBits, int channels) {
+        if (encodedBytes < 0 || !supports(sampleRate, codedBits, channels)) {
+            throw new IllegalArgumentException("unsupported MFiAudio 0x8001 profile");
+        }
+        long channelBytes = channels == 1 ? encodedBytes : (encodedBytes >> 1);
+        long sourceSamples = channelBytes * (8L / codedBits);
+        return sourceSamples * (OUTPUT_RATE / sampleRate);
     }
 
     public static DecodedSampledResource decode(
@@ -42,7 +52,7 @@ public final class Mfi8001Decoder {
 
         int[] codecStereo;
         if (channels == 1) {
-            short[] source = MfiG726Decoder.decode4BitLittleEndian(encoded);
+            short[] source = decodeChannel(encoded, codedBits);
             int[] primary = normalizeChannel(source, sampleRate);
             codecStereo = new int[primary.length * 2];
             for (int i = 0; i < primary.length; i++) {
@@ -53,8 +63,8 @@ public final class Mfi8001Decoder {
             int half = encoded.length >> 1;
             byte[] leftEncoded = Arrays.copyOfRange(encoded, 0, half);
             byte[] rightEncoded = Arrays.copyOfRange(encoded, half, half + half);
-            int[] left = normalizeChannel(MfiG726Decoder.decode4BitLittleEndian(leftEncoded), sampleRate);
-            int[] right = normalizeChannel(MfiG726Decoder.decode4BitLittleEndian(rightEncoded), sampleRate);
+            int[] left = normalizeChannel(decodeChannel(leftEncoded, codedBits), sampleRate);
+            int[] right = normalizeChannel(decodeChannel(rightEncoded, codedBits), sampleRate);
             int frames = Math.min(left.length, right.length);
             codecStereo = new int[frames * 2];
             for (int i = 0; i < frames; i++) {
@@ -63,6 +73,12 @@ public final class Mfi8001Decoder {
             }
         }
         return new DecodedSampledResource(postCodecFir(codecStereo));
+    }
+
+
+    private static short[] decodeChannel(byte[] encoded, int codedBits) {
+        if (codedBits == 2) return MfiG726Decoder.decode2BitLittleEndian(encoded);
+        return MfiG726Decoder.decode4BitLittleEndian(encoded);
     }
 
     private static int[] normalizeChannel(short[] reconstructed, int sampleRate) {

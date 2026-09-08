@@ -66,8 +66,8 @@ ant
 
 ## Known Gaps
 
-- Support: `71:84` (4-bit), `0x81` (4-bit, route 0), and `0x8002` (4-bit AWC2) at 4, 8, 16, or 32 kHz in mono or stereo.
-- Unsupported: `0x8000`, `0x8001` (2-bit), other `0x8002` sample rates, `0x8003`, `71:86`, and routes 2 through 9.
+- Support: `0x8001` G.726 at 2/4-bit, 8/16/32 kHz, mono/stereo active resources; machine `0x106/0x109` 2/4-bit mono; `0x8002` 4-bit AWC2 at 4/8/16/32 kHz, mono/stereo.
+- Unsupported: `0x8000`, other `0x8002` sample rates, `0x8003`, `71:86`, and routes 2 through 9.
 - Proprietary MFi synthesizer audio is handled separately and is not processed by the standard MIDI player.
 
 ---

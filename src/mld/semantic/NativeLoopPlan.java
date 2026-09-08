@@ -50,14 +50,14 @@ public final class NativeLoopPlan {
         if (proofDuration != next.transportEndMicros - next.transportStartMicros) return false;
 
         List<String> proofActions = new ArrayList<String>();
-        for (AudioProgram.AudioAction action : program.audio.actions) {
+        for (AudioProgram.AudioAction action : program.audio.executionActions) {
             if (action.rawTick >= region.parserCycleStartRawTick
                     && action.rawTick < region.parserCycleEndRawTick) {
                 proofActions.add(actionSignature(action));
             }
         }
         List<String> nextActions = new ArrayList<String>();
-        for (AudioProgram.AudioAction action : next.program.audio.actions) {
+        for (AudioProgram.AudioAction action : next.program.audio.executionActions) {
             nextActions.add(actionSignature(action));
         }
         return proofActions.equals(nextActions);

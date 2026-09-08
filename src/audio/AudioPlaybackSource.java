@@ -55,6 +55,10 @@ public final class AudioPlaybackSource {
         return frameToMicrosCeil(linearFrameCount, sampleRate);
     }
 
+    boolean hasVoices() {
+        return !voices.isEmpty();
+    }
+
     public StereoPcm renderLinear() {
         if (linearFrameCount > (Integer.MAX_VALUE / 2L) - 8L) {
             throw new IllegalArgumentException("rendered MLD PCM is too large");

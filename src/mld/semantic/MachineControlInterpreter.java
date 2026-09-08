@@ -46,7 +46,7 @@ final class MachineControlInterpreter {
                 false,
                 phaseGated,
                 true,
-                AudioProgram.RendererSupport.CONTROL_ONLY,
+                rendererSupportForChannelControl(match, level),
                 phaseGated ? AudioProgram.BranchEffect.PHASE_GATED_BACKEND : AudioProgram.BranchEffect.BACKEND_ACTION,
                 AudioProgram.BranchEffect.NO_ACTION,
                 null);
@@ -247,9 +247,22 @@ final class MachineControlInterpreter {
         return MachineAudioSupport.action(
                 order, event, match, kind, logicalChannel, slot, -1, -1,
                 AudioProgram.AudioType.NONE, operation, -1, -1, -1, -1, -1, -1, -1L,
-                value, false, phaseGated, true, AudioProgram.RendererSupport.CONTROL_ONLY,
+                value, false, phaseGated, true,
+                kind == AudioProgram.ActionKind.SLOT_CONTROL
+                        ? AudioProgram.RendererSupport.RECOGNIZED_UNSUPPORTED
+                        : AudioProgram.RendererSupport.CONTROL_ONLY,
                 phaseGated ? AudioProgram.BranchEffect.PHASE_GATED_BACKEND : AudioProgram.BranchEffect.BACKEND_ACTION,
                 AudioProgram.BranchEffect.NO_ACTION, null);
+    }
+
+    private static AudioProgram.RendererSupport rendererSupportForChannelControl(
+            MachineDescriptorMatcher.Match match, boolean level) {
+        boolean verified = level
+                ? match.handlerId == 0x000 && match.descriptorIndex == 18
+                : match.handlerId == 0x105 && match.descriptorIndex == 21;
+        return verified
+                ? AudioProgram.RendererSupport.CONTROL_ONLY
+                : AudioProgram.RendererSupport.RECOGNIZED_UNSUPPORTED;
     }
 
     private static int doubledValue(int raw) {

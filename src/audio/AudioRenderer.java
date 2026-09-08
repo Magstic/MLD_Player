@@ -2,10 +2,8 @@ package audio;
 
 import java.util.ArrayList;
 import java.util.HashMap;
-import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
-import java.util.Set;
 
 import mld.semantic.AudioProgram;
 import mld.semantic.LoopModel;
@@ -24,8 +22,8 @@ public final class AudioRenderer {
     public boolean hasRenderableAudio(NativeProgram program) {
         return program != null
                 && !hasBlockingUnsupportedSampledPath(program)
-                && hasEffectiveVerifiedStart(program)
-                && hasPeriodicNativePcmTemplate(program);
+                && hasPeriodicNativePcmTemplate(program)
+                && hasResolvedStart(program);
     }
 
     public StereoPcm render(NativeProgram program) {
@@ -47,17 +45,92 @@ public final class AudioRenderer {
 
     public int nativeSampleRate(NativeProgram program) {
         requireVerifiedProgram(program);
-        if (!hasAnyVerifiedStart(program)) {
-            throw new IllegalArgumentException("Native program contains no verified sampled-audio start");
+        if (!hasResolvedStart(program)) {
+            throw new IllegalArgumentException("Native program contains no sampled-audio voice");
         }
         return AudioPlaybackSource.NATIVE_SAMPLE_RATE;
     }
 
-    /** Estimates rendered linear duration from verified native sampled-audio frame arithmetic. */
+    /** Estimates linear duration from semantic start/stop actions without decoding sample payloads. */
     public long estimateLinearDurationMillis(NativeProgram program) {
-        long durationMicros = preparePlayback(program).getLinearDurationMicros();
-        return durationMicros / 1000L + (durationMicros % 1000L == 0L ? 0L : 1L);
+        requireVerifiedProgram(program);
+        long frames = estimateLinearFrameCount(program);
+        long micros = AudioPlaybackSource.frameToMicrosCeil(
+                frames, AudioPlaybackSource.NATIVE_SAMPLE_RATE);
+        return micros / 1000L + (micros % 1000L == 0L ? 0L : 1L);
     }
+
+    private static boolean hasResolvedStart(NativeProgram program) {
+        for (AudioProgram.AudioAction action : program.audio.executionActions) {
+            if (action.kind == AudioProgram.ActionKind.RESOURCE_START
+                    || action.kind == AudioProgram.ActionKind.SLOT_START) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static long estimateLinearFrameCount(NativeProgram program) {
+        List<VoiceLifetime> voices = new ArrayList<VoiceLifetime>();
+        for (AudioProgram.AudioAction action : program.audio.executionActions) {
+            long actionFrame = AudioPlaybackSource.microsToFrameFloor(
+                    program.timing.rawTickToMicros(action.rawTick),
+                    AudioPlaybackSource.NATIVE_SAMPLE_RATE);
+            if (stopVoicesForAction(voices, action, actionFrame)) continue;
+            if (action.kind != AudioProgram.ActionKind.RESOURCE_START
+                    && action.kind != AudioProgram.ActionKind.SLOT_START) {
+                continue;
+            }
+
+            long frameCount = resolvedFrameCount(program, action);
+            if (action.kind == AudioProgram.ActionKind.SLOT_START) {
+                frameCount = durationLimitedFrameCount(frameCount, action.durationMs);
+            }
+            VoiceLifetime started = new VoiceLifetime(
+                    actionFrame,
+                    frameCount,
+                    action.logicalChannel,
+                    action.kind == AudioProgram.ActionKind.RESOURCE_START
+                            ? action.resourceIndex : -1,
+                    action.kind == AudioProgram.ActionKind.SLOT_START ? action.slot : -1);
+            stopOldestIfNativePoolFull(voices, started);
+            voices.add(started);
+        }
+
+        long semanticEndMicros = program.timing.rawTickToMicros(program.semanticEndRawTick);
+        long end = Math.max(1L, AudioPlaybackSource.microsToFrameCeil(
+                semanticEndMicros, AudioPlaybackSource.NATIVE_SAMPLE_RATE));
+        for (VoiceLifetime voice : voices) {
+            end = Math.max(end, AudioPlaybackSource.safeAdd(voice.startFrame, voice.frameCount));
+        }
+        return end;
+    }
+
+    private static long resolvedFrameCount(
+            NativeProgram program, AudioProgram.AudioAction action) {
+        if (action.kind == AudioProgram.ActionKind.RESOURCE_START) {
+            AudioProgram.ResourceCatalogEntry entry = resourceEntry(program, action.linkedCatalogIndex);
+            if (entry == null || entry.sampledResource == null) {
+                throw new IllegalArgumentException("verified resource start has no typed sampled resource");
+            }
+            AudioProgram.SampledResource resource = entry.sampledResource;
+            return Mfi8001Decoder.decodedFrameCount(
+                    resource.encodedPayloadLength(), resource.sampleRate,
+                    resource.codedBits, resource.channelCount);
+        }
+        if (action.audioType == AudioProgram.AudioType.MFI_8001) {
+            return Mfi8001Decoder.decodedFrameCount(
+                    action.encodedPayloadLength(), action.sampleRate,
+                    action.codedBits, action.channelCount);
+        }
+        if (action.audioType == AudioProgram.AudioType.MFI_8002) {
+            return Mfi8002Decoder.decodedFrameCount(
+                    action.encodedPayloadLength(), action.sampleRate,
+                    action.codedBits, action.channelCount);
+        }
+        throw new IllegalArgumentException("resolved sampled slot has unsupported audio type");
+    }
+
 
     private AudioPlaybackSource prepareNativePlayback(NativeProgram program) {
         Map<Integer, Integer> channelLevels = new HashMap<Integer, Integer>();
@@ -65,14 +138,12 @@ public final class AudioRenderer {
         Map<Integer, Integer> resourceChannelRoutes = new HashMap<Integer, Integer>();
         Map<Integer, DecodedSampledResource> activeResourceCache =
                 new HashMap<Integer, DecodedSampledResource>();
-        Map<Integer, LoadedSlot> loadedSlots = new HashMap<Integer, LoadedSlot>();
-        Set<Integer> compactCachedStateSlots = new HashSet<Integer>();
         List<MutableVoice> voiceBuilders = new ArrayList<MutableVoice>();
         int resourceLevel = DEFAULT_RESOURCE_LEVEL;
         int resourcePan = DEFAULT_RESOURCE_PAN;
         int globalSampledLevel = program.audio.globalSampledLevel;
 
-        for (AudioProgram.AudioAction action : program.audio.actions) {
+        for (AudioProgram.AudioAction action : program.audio.executionActions) {
             if (action.kind == AudioProgram.ActionKind.RESOURCE_LEVEL && action.value >= 0) {
                 resourceLevel = action.value;
                 updateLiveVoices(
@@ -87,7 +158,7 @@ public final class AudioRenderer {
                         resourceLevel, resourcePan, channelLevels, channelPans);
                 continue;
             }
-            if (isVerifiedChannelLevel(action)) {
+            if (action.kind == AudioProgram.ActionKind.CHANNEL_LEVEL) {
                 channelLevels.put(
                         Integer.valueOf(action.logicalChannel), Integer.valueOf(action.value));
                 updateLiveVoices(
@@ -95,7 +166,7 @@ public final class AudioRenderer {
                         resourceLevel, resourcePan, channelLevels, channelPans);
                 continue;
             }
-            if (isVerifiedChannelPan(action)) {
+            if (action.kind == AudioProgram.ActionKind.CHANNEL_PAN) {
                 channelPans.put(
                         Integer.valueOf(action.logicalChannel), Integer.valueOf(action.value));
                 updateLiveVoices(
@@ -103,39 +174,30 @@ public final class AudioRenderer {
                         resourceLevel, resourcePan, channelLevels, channelPans);
                 continue;
             }
-            if (action.kind == AudioProgram.ActionKind.CHANNEL_ROUTE && action.logicalChannel >= 0) {
+            if (action.kind == AudioProgram.ActionKind.CHANNEL_ROUTE) {
                 resourceChannelRoutes.put(
                         Integer.valueOf(action.logicalChannel), Integer.valueOf(action.value));
                 continue;
             }
-            if (isVerifiedResourceStop(action)) {
-                stopResourceVoices(voiceBuilders, program, action);
+            if (action.kind == AudioProgram.ActionKind.RESOURCE_STOP
+                    || action.kind == AudioProgram.ActionKind.SLOT_RELEASE
+                    || action.kind == AudioProgram.ActionKind.SLOT_STOP) {
+                long actionFrame = AudioPlaybackSource.microsToFrameFloor(
+                        program.timing.rawTickToMicros(action.rawTick),
+                        AudioPlaybackSource.NATIVE_SAMPLE_RATE);
+                stopVoicesForAction(voiceBuilders, action, actionFrame);
                 continue;
             }
-            if (isVerified8002Load(action)) {
-                releaseSlotVoices(voiceBuilders, program, action);
-                DecodedSampledResource decoded = Mfi8002Decoder.decode(
-                        action.copyEncodedPayload(), action.sampleRate,
-                        action.codedBits, action.channelCount);
-                Integer slot = Integer.valueOf(action.slot);
-                loadedSlots.put(slot, new LoadedSlot(decoded, action.durationMs));
-                compactCachedStateSlots.add(slot);
-                continue;
-            }
-            if (isVerifiedCompactStop(action)) {
-                stopSlotVoices(voiceBuilders, program, action);
-                continue;
-            }
-            if (consumeCompactPendingAttempt(compactCachedStateSlots, action)) {
-                // Pending 0x106 resolves to an unreleased type mismatch or cached-op-3 no-op.
-                // Both leave the existing 0x8002 cache and voices unchanged.
-                continue;
-            }
+
+            boolean resourceStart = action.kind == AudioProgram.ActionKind.RESOURCE_START;
+            boolean slotStart = action.kind == AudioProgram.ActionKind.SLOT_START;
+            if (!resourceStart && !slotStart) continue;
 
             DecodedSampledResource decoded;
             int startLevel;
             int voiceFrameCount;
-            boolean resourceStart = isVerifiedResourceStart(action);
+            int startLogicalChannel = action.logicalChannel;
+            int startSlot = -1;
             if (resourceStart) {
                 AudioProgram.ResourceCatalogEntry entry = resourceEntry(program, action.linkedCatalogIndex);
                 if (entry == null || entry.sampledResource == null) {
@@ -152,35 +214,19 @@ public final class AudioRenderer {
                 }
                 startLevel = action.value >= 0 ? action.value : 126;
                 voiceFrameCount = decoded.getFrameCount();
-            } else if (isVerifiedMachineStart(action)) {
-                releaseSlotVoices(voiceBuilders, program, action);
-                Integer slot = Integer.valueOf(action.slot);
-                LoadedSlot previous = loadedSlots.get(slot);
-                long compactDurationMs = previous == null ? 0L : previous.compactDurationMs;
-                decoded = Mfi8001Decoder.decode(
-                        action.copyEncodedPayload(), action.sampleRate,
-                        action.codedBits, action.channelCount);
-                loadedSlots.put(slot, new LoadedSlot(decoded, compactDurationMs));
-                startLevel = DEFAULT_START_LEVEL;
-                voiceFrameCount = durationLimitedFrameCount(decoded, action.durationMs);
-            } else if (isVerifiedCompactStart(action)) {
-                LoadedSlot loaded = loadedSlots.get(Integer.valueOf(action.slot));
-                if (loaded == null) {
-                    throw new IllegalArgumentException("verified compact start has no loaded slot");
-                }
-                decoded = loaded.resource;
-                startLevel = action.value;
-                voiceFrameCount = durationLimitedFrameCount(decoded, loaded.compactDurationMs);
             } else {
-                continue;
+                decoded = decodeSlotStart(action);
+                startLevel = action.value >= 0 ? action.value : DEFAULT_START_LEVEL;
+                startSlot = action.slot;
+                voiceFrameCount = durationLimitedFrameCount(decoded, action.durationMs);
             }
 
             int channelLevel = valueOrDefault(
-                    channelLevels, action.logicalChannel, DEFAULT_CHANNEL_LEVEL);
+                    channelLevels, startLogicalChannel, DEFAULT_CHANNEL_LEVEL);
             int channelPan = valueOrDefault(
-                    channelPans, action.logicalChannel, DEFAULT_CHANNEL_PAN);
+                    channelPans, startLogicalChannel, DEFAULT_CHANNEL_PAN);
             int route = resourceStart
-                    ? valueOrDefault(resourceChannelRoutes, action.logicalChannel, DEFAULT_ROUTE)
+                    ? valueOrDefault(resourceChannelRoutes, startLogicalChannel, DEFAULT_ROUTE)
                     : DEFAULT_ROUTE;
             if (route != 0) {
                 throw new IllegalArgumentException(
@@ -196,19 +242,20 @@ public final class AudioRenderer {
             long startMicros = program.timing.rawTickToMicros(action.rawTick);
             long startFrame = AudioPlaybackSource.microsToFrameFloor(
                     startMicros, AudioPlaybackSource.NATIVE_SAMPLE_RATE);
-            addVoiceWithNativePool(voiceBuilders, new MutableVoice(
+            MutableVoice started = new MutableVoice(
                     startMicros,
                     startFrame,
                     decoded,
                     voiceFrameCount,
-                    action.logicalChannel,
+                    startLogicalChannel,
                     resourceStart ? action.resourceIndex : -1,
-                    (isVerifiedCompactStart(action) || isVerifiedMachineStart(action))
-                            ? action.slot : -1,
+                    startSlot,
                     startLevel,
                     globalSampledLevel,
                     leftGain,
-                    rightGain));
+                    rightGain);
+            stopOldestIfNativePoolFull(voiceBuilders, started);
+            voiceBuilders.add(started);
         }
 
         List<AudioPlaybackSource.Voice> voices = new ArrayList<AudioPlaybackSource.Voice>();
@@ -227,6 +274,19 @@ public final class AudioRenderer {
                 loopStartMicros,
                 loopEndMicros,
                 voices);
+    }
+
+    private static DecodedSampledResource decodeSlotStart(AudioProgram.AudioAction action) {
+        byte[] encoded = action.copyEncodedPayload();
+        if (action.audioType == AudioProgram.AudioType.MFI_8001) {
+            return Mfi8001Decoder.decode(
+                    encoded, action.sampleRate, action.codedBits, action.channelCount);
+        }
+        if (action.audioType == AudioProgram.AudioType.MFI_8002) {
+            return Mfi8002Decoder.decode(
+                    encoded, action.sampleRate, action.codedBits, action.channelCount);
+        }
+        throw new IllegalArgumentException("resolved sampled slot has unsupported audio type");
     }
 
     private static void updateLiveVoices(
@@ -259,46 +319,36 @@ public final class AudioRenderer {
         }
     }
 
-    private static void stopResourceVoices(
-            List<MutableVoice> voices, NativeProgram program, AudioProgram.AudioAction action) {
-        long stopFrame = AudioPlaybackSource.microsToFrameFloor(
-                program.timing.rawTickToMicros(action.rawTick),
-                AudioPlaybackSource.NATIVE_SAMPLE_RATE);
-        for (MutableVoice voice : voices) {
-            if (voice.resourceIndex == action.resourceIndex
+    private static boolean stopVoicesForAction(
+            List<? extends VoiceLifetime> voices,
+            AudioProgram.AudioAction action,
+            long stopFrame) {
+        boolean resourceStop = action.kind == AudioProgram.ActionKind.RESOURCE_STOP;
+        boolean slotRelease = action.kind == AudioProgram.ActionKind.SLOT_RELEASE;
+        boolean slotStop = action.kind == AudioProgram.ActionKind.SLOT_STOP;
+        if (!resourceStop && !slotRelease && !slotStop) return false;
+
+        for (VoiceLifetime voice : voices) {
+            if (resourceStop
+                    && voice.resourceIndex == action.resourceIndex
+                    && voice.logicalChannel == action.logicalChannel) {
+                voice.stopAt(stopFrame);
+            } else if (slotRelease && voice.slot == action.slot) {
+                voice.stopAt(stopFrame);
+            } else if (slotStop
+                    && voice.slot == action.slot
                     && voice.logicalChannel == action.logicalChannel) {
                 voice.stopAt(stopFrame);
             }
         }
+        return true;
     }
 
-    private static void releaseSlotVoices(
-            List<MutableVoice> voices, NativeProgram program, AudioProgram.AudioAction action) {
-        long stopFrame = AudioPlaybackSource.microsToFrameFloor(
-                program.timing.rawTickToMicros(action.rawTick),
-                AudioPlaybackSource.NATIVE_SAMPLE_RATE);
-        for (MutableVoice voice : voices) {
-            if (voice.slot == action.slot) voice.stopAt(stopFrame);
-        }
-    }
-
-    private static void stopSlotVoices(
-            List<MutableVoice> voices, NativeProgram program, AudioProgram.AudioAction action) {
-        long stopFrame = AudioPlaybackSource.microsToFrameFloor(
-                program.timing.rawTickToMicros(action.rawTick),
-                AudioPlaybackSource.NATIVE_SAMPLE_RATE);
-        for (MutableVoice voice : voices) {
-            if (voice.slot == action.slot && voice.logicalChannel == action.logicalChannel) {
-                voice.stopAt(stopFrame);
-            }
-        }
-    }
-
-    private static void addVoiceWithNativePool(
-            List<MutableVoice> voices, MutableVoice started) {
+    private static void stopOldestIfNativePoolFull(
+            List<? extends VoiceLifetime> voices, VoiceLifetime started) {
         int activeCount = 0;
-        MutableVoice oldest = null;
-        for (MutableVoice voice : voices) {
+        VoiceLifetime oldest = null;
+        for (VoiceLifetime voice : voices) {
             if (!voice.isAllocatedAt(started.startFrame)) continue;
             if (oldest == null) oldest = voice;
             activeCount++;
@@ -306,17 +356,6 @@ public final class AudioRenderer {
         if (activeCount >= NATIVE_VOICE_COUNT) {
             // MFiAudio 0x10001000 reuses the active entry with the lowest start serial.
             oldest.stopAt(started.startFrame);
-        }
-        voices.add(started);
-    }
-
-    private static final class LoadedSlot {
-        final DecodedSampledResource resource;
-        final long compactDurationMs;
-
-        LoadedSlot(DecodedSampledResource resource, long compactDurationMs) {
-            this.resource = resource;
-            this.compactDurationMs = compactDurationMs;
         }
     }
 
@@ -331,17 +370,45 @@ public final class AudioRenderer {
         return Math.min(decodedFrames, durationFrames);
     }
 
-    private static final class MutableVoice {
-        final long startMicros;
+    private static class VoiceLifetime {
         final long startFrame;
-        final DecodedSampledResource resource;
-        int frameCount;
+        long frameCount;
         final int logicalChannel;
         final int resourceIndex;
         final int slot;
+        boolean explicitlyStopped;
+
+        VoiceLifetime(
+                long startFrame,
+                long frameCount,
+                int logicalChannel,
+                int resourceIndex,
+                int slot) {
+            this.startFrame = startFrame;
+            this.frameCount = frameCount;
+            this.logicalChannel = logicalChannel;
+            this.resourceIndex = resourceIndex;
+            this.slot = slot;
+        }
+
+        void stopAt(long stopFrame) {
+            explicitlyStopped = true;
+            long sourceFrame = stopFrame - startFrame;
+            if (sourceFrame >= 0L && sourceFrame < frameCount) frameCount = sourceFrame;
+        }
+
+        boolean isAllocatedAt(long frame) {
+            if (explicitlyStopped || frame < startFrame) return false;
+            if (frame == startFrame) return true;
+            return frame - startFrame < frameCount;
+        }
+    }
+
+    private static final class MutableVoice extends VoiceLifetime {
+        final long startMicros;
+        final DecodedSampledResource resource;
         final int startLevel;
         final int globalSampledLevel;
-        boolean explicitlyStopped;
         final List<AudioPlaybackSource.GainSegment> gainSegments =
                 new ArrayList<AudioPlaybackSource.GainSegment>();
 
@@ -357,30 +424,12 @@ public final class AudioRenderer {
                 int globalSampledLevel,
                 int leftGain,
                 int rightGain) {
+            super(startFrame, frameCount, logicalChannel, resourceIndex, slot);
             this.startMicros = startMicros;
-            this.startFrame = startFrame;
             this.resource = resource;
-            this.frameCount = frameCount;
-            this.logicalChannel = logicalChannel;
-            this.resourceIndex = resourceIndex;
-            this.slot = slot;
             this.startLevel = startLevel;
             this.globalSampledLevel = globalSampledLevel;
             addGainSegment(0, leftGain, rightGain);
-        }
-
-        void stopAt(long stopFrame) {
-            explicitlyStopped = true;
-            long sourceFrame = stopFrame - startFrame;
-            if (sourceFrame >= 0L && sourceFrame < frameCount) {
-                frameCount = (int)sourceFrame;
-            }
-        }
-
-        boolean isAllocatedAt(long frame) {
-            if (explicitlyStopped || frame < startFrame) return false;
-            if (frame == startFrame) return true;
-            return frame - startFrame < frameCount;
         }
 
         void addGainSegment(int sourceFrame, int leftGain, int rightGain) {
@@ -396,7 +445,7 @@ public final class AudioRenderer {
 
         AudioPlaybackSource.Voice freeze() {
             return new AudioPlaybackSource.Voice(
-                    startMicros, startFrame, resource, frameCount, gainSegments);
+                    startMicros, startFrame, resource, (int)frameCount, gainSegments);
         }
     }
 
@@ -440,11 +489,6 @@ public final class AudioRenderer {
         }
     }
 
-    private static boolean hasPeriodicNativePcmTemplate(NativeProgram program) {
-        return program == null || program.nativeLoop == null
-                || program.nativeLoop.isPcmTemplatePeriodic(program);
-    }
-
     private static boolean hasBlockingUnsupportedSampledPath(NativeProgram program) {
         boolean hasResourceExecution = false;
         for (AudioProgram.AudioAction action : program.audio.actions) {
@@ -453,187 +497,35 @@ public final class AudioRenderer {
                 if (!isVerifiedResourceStart(action)) return true;
             }
         }
-        Set<Integer> loadedSlots = new HashSet<Integer>();
-        Set<Integer> compactCachedStateSlots = new HashSet<Integer>();
         for (AudioProgram.AudioAction action : program.audio.actions) {
-            if (hasResourceExecution
-                    && action.kind == AudioProgram.ActionKind.RESOURCE_STOP
-                    && !isVerifiedResourceStop(action)) return true;
             if (hasResourceExecution
                     && action.kind == AudioProgram.ActionKind.CHANNEL_ROUTE
-                    && action.value != 0) return true;
-            if (action.sourceKind != AudioProgram.SourceKind.MACHINE_DEPENDENT) continue;
-            if (consumeCompactPendingAttempt(compactCachedStateSlots, action)) continue;
-            if (isForcedCached8001Load(action)) return true;
-            if (action.kind == AudioProgram.ActionKind.CHANNEL_LEVEL
-                    && !isVerifiedChannelLevel(action)) return true;
-            if (action.kind == AudioProgram.ActionKind.CHANNEL_PAN
-                    && !isVerifiedChannelPan(action)) return true;
-            if (action.kind == AudioProgram.ActionKind.SLOT_LOAD) {
-                if (!isVerified8002Load(action)) return true;
-                Integer slot = Integer.valueOf(action.slot);
-                loadedSlots.add(slot);
-                compactCachedStateSlots.add(slot);
-                continue;
-            }
-            if (action.kind == AudioProgram.ActionKind.SLOT_START) {
-                if (!isVerifiedCompactStart(action)
-                        || !loadedSlots.contains(Integer.valueOf(action.slot))) return true;
-                continue;
-            }
-            if (action.kind == AudioProgram.ActionKind.SLOT_STOP) {
-                if (!isVerifiedCompactStop(action)) return true;
-                continue;
-            }
-            if (action.kind == AudioProgram.ActionKind.SLOT_LOAD_AND_START) {
-                if (!isVerifiedMachineStart(action)) return true;
-                Integer slot = Integer.valueOf(action.slot);
-                if (!compactCachedStateSlots.remove(slot)) loadedSlots.add(slot);
-            }
-            if (action.kind == AudioProgram.ActionKind.SLOT_CONTROL) return true;
-        }
-        return false;
-    }
-
-    private static boolean hasAnyVerifiedStart(NativeProgram program) {
-        return hasEffectiveVerifiedStart(program);
-    }
-
-    private static boolean hasEffectiveVerifiedStart(NativeProgram program) {
-        Set<Integer> loadedSlots = new HashSet<Integer>();
-        Set<Integer> compactCachedStateSlots = new HashSet<Integer>();
-        for (AudioProgram.AudioAction action : program.audio.actions) {
-            if (isVerifiedResourceStart(action)) return true;
-            if (isVerified8002Load(action)) {
-                Integer slot = Integer.valueOf(action.slot);
-                loadedSlots.add(slot);
-                compactCachedStateSlots.add(slot);
-                continue;
-            }
-            if (consumeCompactPendingAttempt(compactCachedStateSlots, action)) continue;
-            if (isVerifiedMachineStart(action)) {
-                Integer slot = Integer.valueOf(action.slot);
-                if (compactCachedStateSlots.remove(slot)) continue;
-                loadedSlots.add(slot);
+                    && action.value != 0) {
                 return true;
             }
-            if (isVerifiedCompactStart(action)
-                    && loadedSlots.contains(Integer.valueOf(action.slot))) return true;
+            if (action.sourceKind == AudioProgram.SourceKind.MACHINE_DEPENDENT
+                    && action.rendererSupport
+                            == AudioProgram.RendererSupport.RECOGNIZED_UNSUPPORTED
+                    && action.layeredEffect != AudioProgram.BranchEffect.NO_ACTION) {
+                return true;
+            }
         }
         return false;
-    }
-
-    private static boolean consumeCompactPendingAttempt(
-            Set<Integer> compactPendingSlots, AudioProgram.AudioAction action) {
-        if (!isFormatValidCached8001(action)) return false;
-        Integer slot = Integer.valueOf(action.slot);
-        if (!compactPendingSlots.contains(slot)) return false;
-        if (action.controlFlag == 0) compactPendingSlots.remove(slot);
-        return true;
-    }
-
-    private static boolean isFormatValidCached8001(AudioProgram.AudioAction action) {
-        return action.sourceKind == AudioProgram.SourceKind.MACHINE_DEPENDENT
-                && (action.handlerId == 0x109 || action.handlerId == 0x106)
-                && action.audioType == AudioProgram.AudioType.MFI_8001
-                && action.slot >= 0 && action.slot < 64
-                && action.sampleRate > 0
-                && (action.codedBits == 2 || action.codedBits == 4)
-                && action.channelCount == 1;
-    }
-
-    private static boolean isForcedCached8001Load(AudioProgram.AudioAction action) {
-        return isFormatValidCached8001(action)
-                && action.controlFlag == 1
-                && action.operation != 2;
-    }
-
-    private static boolean isVerifiedChannelLevel(AudioProgram.AudioAction action) {
-        return action.kind == AudioProgram.ActionKind.CHANNEL_LEVEL
-                && action.logicalChannel >= 0
-                && (action.sourceKind == AudioProgram.SourceKind.RESOURCE_7F
-                || (action.sourceKind == AudioProgram.SourceKind.MACHINE_DEPENDENT
-                && action.descriptorIndex == 18
-                && action.handlerId == 0x000));
-    }
-
-    private static boolean isVerifiedChannelPan(AudioProgram.AudioAction action) {
-        if (action.kind != AudioProgram.ActionKind.CHANNEL_PAN || action.logicalChannel < 0) {
-            return false;
-        }
-        if (action.sourceKind == AudioProgram.SourceKind.RESOURCE_7F) return true;
-        if (action.sourceKind != AudioProgram.SourceKind.MACHINE_DEPENDENT) return false;
-        if (action.descriptorIndex == 21 && action.handlerId == 0x105) return true;
-        return (action.descriptorIndex == 9 && action.handlerId == 0x401 && action.operation == 6)
-                || (action.descriptorIndex == 26 && action.handlerId == 0x402
-                        && action.operation == 11);
-    }
-
-    private static boolean isVerifiedResourceStop(AudioProgram.AudioAction action) {
-        return action.sourceKind == AudioProgram.SourceKind.RESOURCE_7F
-                && action.kind == AudioProgram.ActionKind.RESOURCE_STOP
-                && action.logicalChannel >= 0
-                && action.resourceIndex >= 0;
     }
 
     private static boolean isVerifiedResourceStart(AudioProgram.AudioAction action) {
         return action.sourceKind == AudioProgram.SourceKind.RESOURCE_7F
                 && action.kind == AudioProgram.ActionKind.RESOURCE_START
-                && action.rendererSupport == AudioProgram.RendererSupport.VERIFIED_8001_4BIT
                 && action.audioType == AudioProgram.AudioType.MFI_8001
-                && Mfi8001Decoder.supports(action.sampleRate, action.codedBits, action.channelCount)
-                && action.linkedCatalogIndex >= 0;
+                && action.linkedCatalogIndex >= 0
+                && (action.rendererSupport == AudioProgram.RendererSupport.VERIFIED_8001_4BIT
+                        || action.rendererSupport
+                                == AudioProgram.RendererSupport.VERIFIED_8001_2BIT);
     }
 
-    private static boolean isVerifiedMachineStart(AudioProgram.AudioAction action) {
-        return action.rendererSupport == AudioProgram.RendererSupport.VERIFIED_8001_4BIT
-                && action.sourceKind == AudioProgram.SourceKind.MACHINE_DEPENDENT
-                && action.descriptorIndex == 23
-                && action.handlerId == 0x106
-                && action.kind == AudioProgram.ActionKind.SLOT_LOAD_AND_START
-                && action.audioType == AudioProgram.AudioType.MFI_8001
-                && action.operation == 1
-                && Mfi8001Decoder.supports(action.sampleRate, action.codedBits, action.channelCount);
-    }
-
-    private static boolean isVerified8002Load(AudioProgram.AudioAction action) {
-        boolean nativeEntry = (action.descriptorIndex == 8 && action.handlerId == 0x400)
-                || (action.descriptorIndex == 26 && action.handlerId == 0x402);
-        return action.rendererSupport == AudioProgram.RendererSupport.VERIFIED_8002_AWC2_4BIT
-                && action.sourceKind == AudioProgram.SourceKind.MACHINE_DEPENDENT
-                && nativeEntry
-                && action.kind == AudioProgram.ActionKind.SLOT_LOAD
-                && action.audioType == AudioProgram.AudioType.MFI_8002
-                && action.slot >= 0 && action.slot < 64
-                && Mfi8002Decoder.supportsPayloadLength(
-                        action.encodedPayloadLength(), action.channelCount)
-                && Mfi8002Decoder.supports(
-                        action.sampleRate, action.codedBits, action.channelCount);
-    }
-
-    private static boolean isVerifiedCompactStart(AudioProgram.AudioAction action) {
-        boolean nativeEntry = (action.descriptorIndex == 9 && action.handlerId == 0x401
-                        && (action.operation == 3 || action.operation == 4))
-                || (action.descriptorIndex == 26 && action.handlerId == 0x402
-                        && (action.operation == 9 || action.operation == 15));
-        return action.sourceKind == AudioProgram.SourceKind.MACHINE_DEPENDENT
-                && nativeEntry
-                && action.kind == AudioProgram.ActionKind.SLOT_START
-                && action.logicalChannel >= 0 && action.logicalChannel < 4
-                && action.slot >= 0 && action.slot < 32
-                && action.value >= 0;
-    }
-
-    private static boolean isVerifiedCompactStop(AudioProgram.AudioAction action) {
-        boolean nativeEntry = (action.descriptorIndex == 9 && action.handlerId == 0x401
-                        && action.operation == 5)
-                || (action.descriptorIndex == 26 && action.handlerId == 0x402
-                        && action.operation == 10);
-        return action.sourceKind == AudioProgram.SourceKind.MACHINE_DEPENDENT
-                && nativeEntry
-                && action.kind == AudioProgram.ActionKind.SLOT_STOP
-                && action.logicalChannel >= 0 && action.logicalChannel < 4
-                && action.slot >= 0 && action.slot < 32;
+    private static boolean hasPeriodicNativePcmTemplate(NativeProgram program) {
+        return program == null || program.nativeLoop == null
+                || program.nativeLoop.isPcmTemplatePeriodic(program);
     }
 
     private static int valueOrDefault(Map<Integer, Integer> values, int key, int defaultValue) {

@@ -11,6 +11,7 @@ public final class AudioProgram {
     public final List<InitialChannelConfig> initialChannelConfigs;
     public final List<ResourceEventState> resourceEvents;
     public final List<AudioAction> actions;
+    public final List<AudioAction> executionActions;
     public final List<ChannelState> channelStates;
     public final List<SlotState> slotStates;
     public final List<ConfigBinding> configBindings;
@@ -25,6 +26,7 @@ public final class AudioProgram {
             List<InitialChannelConfig> initialChannelConfigs,
             List<ResourceEventState> resourceEvents,
             List<AudioAction> actions,
+            List<AudioAction> executionActions,
             List<ChannelState> channelStates,
             List<SlotState> slotStates,
             List<ConfigBinding> configBindings,
@@ -37,6 +39,7 @@ public final class AudioProgram {
         this.initialChannelConfigs = immutable(initialChannelConfigs);
         this.resourceEvents = immutable(resourceEvents);
         this.actions = immutable(actions);
+        this.executionActions = immutable(executionActions);
         this.channelStates = immutable(channelStates);
         this.slotStates = immutable(slotStates);
         this.configBindings = immutable(configBindings);
@@ -66,6 +69,7 @@ public final class AudioProgram {
         CHANNEL_ROUTE,
         CONFIG_SELECT,
         SLOT_LOAD,
+        SLOT_RELEASE,
         SLOT_START,
         SLOT_LOAD_AND_START,
         SLOT_STOP,
@@ -93,6 +97,7 @@ public final class AudioProgram {
     public enum RendererSupport {
         CONTROL_ONLY,
         VERIFIED_8001_4BIT,
+        VERIFIED_8001_2BIT,
         VERIFIED_8002_AWC2_4BIT,
         RECOGNIZED_UNSUPPORTED
     }

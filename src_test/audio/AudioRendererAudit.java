@@ -26,15 +26,18 @@ public final class AudioRendererAudit {
         auditMfi8002ControlClosure();
         auditNativeVoicePoolLimit();
         Sfx8001FixtureVectors.audit();
+        Sfx8001TwoBitFixtureVectors.audit();
         auditVerifiedMixerVectors();
         auditVerifiedLegacyRendererWiring();
         auditActiveAdatRendererWiring();
+        auditActiveAdatTwoBitMatrix();
         auditActiveAdatResourceStop();
         auditActiveAdatResourceLevelOwnership();
         auditActiveAdatLiveChannelControls();
         auditSharedLogicalSampledChannelOwners();
         auditActiveAdatUnsupportedProfilesFailClosed();
         auditMachineDurationLimit();
+        auditMachine8001TwoBitRuntime();
         auditMachineLiveControls();
         auditLightweightLinearDuration();
         auditVoiceStartStateAndTiming();
@@ -63,31 +66,73 @@ public final class AudioRendererAudit {
         }, MfiG726Decoder.decode4BitLittleEndian(new byte[] {
                 0x77, 0x77, 0x77, 0x77, 0x77, 0x77
         }));
+
+        eqShorts("MFiAudio 2-bit G.726 predictor vector", new short[] {
+                12, 12, 12, 12, -60, 16, 72, 24, 24, 80, -28, 32,
+                -112, 200, 348, 616, 328, -724, -356, 1112, -1772, -3024,
+                4348, -7424, 2908, -2816, -2100, -6196, -9548, -5424,
+                9352, -5040, 3956, 1652, -2804, -1056
+        }, MfiG726Decoder.decode2BitLittleEndian(new byte[] {
+                0x00, 0x12, 0x34, 0x56, 0x78,
+                (byte)0x9A, (byte)0xBC, (byte)0xDE, (byte)0xF0
+        }));
     }
 
     private static void auditMfi8001ProfileFraming() {
+        int[] rates = {8000, 16000, 32000};
+        byte[] monoEncoded = new byte[] {0x12, 0x34};
+        int[] expectedMonoFrames = {32, 16, 8};
+        for (int i = 0; i < rates.length; i++) {
+            int rate = rates[i];
+            if (!Mfi8001Decoder.supports(rate, 2, 1)
+                    || !Mfi8001Decoder.supports(rate, 2, 2)
+                    || !Mfi8001Decoder.supports(rate, 4, 1)
+                    || !Mfi8001Decoder.supports(rate, 4, 2)) {
+                fail("0x8001 profile matrix", "rate=" + rate);
+            }
+            eq("2-bit mono frame count " + rate, expectedMonoFrames[i],
+                    Mfi8001Decoder.decode(monoEncoded, rate, 2, 1).getFrameCount());
+        }
+
         byte[] leftEncoded = new byte[] {0x12, 0x34};
         byte[] rightEncoded = new byte[] {0x56, 0x78};
         byte[] stereoEncoded = new byte[] {0x12, 0x34, 0x56, 0x78};
-        DecodedSampledResource left = Mfi8001Decoder.decode(leftEncoded, 8000, 4, 1);
-        DecodedSampledResource right = Mfi8001Decoder.decode(rightEncoded, 8000, 4, 1);
-        DecodedSampledResource stereo = Mfi8001Decoder.decode(stereoEncoded, 8000, 4, 2);
-        eq("stereo split frames", left.getFrameCount(), stereo.getFrameCount());
-        eq("stereo right frames", right.getFrameCount(), stereo.getFrameCount());
+        DecodedSampledResource left4 = Mfi8001Decoder.decode(leftEncoded, 8000, 4, 1);
+        DecodedSampledResource right4 = Mfi8001Decoder.decode(rightEncoded, 8000, 4, 1);
+        DecodedSampledResource stereo4 = Mfi8001Decoder.decode(stereoEncoded, 8000, 4, 2);
+        assertPlanarStereoSplit("4-bit stereo split", left4, right4, stereo4);
+
+        DecodedSampledResource left2 = Mfi8001Decoder.decode(leftEncoded, 16000, 2, 1);
+        DecodedSampledResource right2 = Mfi8001Decoder.decode(rightEncoded, 16000, 2, 1);
+        DecodedSampledResource stereo2 = Mfi8001Decoder.decode(stereoEncoded, 16000, 2, 2);
+        assertPlanarStereoSplit("2-bit stereo split", left2, right2, stereo2);
+
+        eq("16k 4-bit frame count", 8,
+                Mfi8001Decoder.decode(leftEncoded, 16000, 4, 1).getFrameCount());
+        eq("32k 4-bit frame count", 4,
+                Mfi8001Decoder.decode(leftEncoded, 32000, 4, 1).getFrameCount());
+        DecodedSampledResource oddStereo4 = Mfi8001Decoder.decode(
+                new byte[] {0x12, 0x34, 0x56, 0x78, (byte)0x9A}, 8000, 4, 2);
+        eq("4-bit odd stereo trailing byte ignored", 16, oddStereo4.getFrameCount());
+        DecodedSampledResource oddStereo2 = Mfi8001Decoder.decode(
+                new byte[] {0x12, 0x34, 0x56, 0x78, (byte)0x9A}, 16000, 2, 2);
+        eq("2-bit odd stereo trailing byte ignored", 16, oddStereo2.getFrameCount());
+    }
+
+    private static void assertPlanarStereoSplit(
+            String label,
+            DecodedSampledResource left,
+            DecodedSampledResource right,
+            DecodedSampledResource stereo) {
+        eq(label + " left frames", left.getFrameCount(), stereo.getFrameCount());
+        eq(label + " right frames", right.getFrameCount(), stereo.getFrameCount());
         int[] leftSamples = left.copyInterleavedStereo();
         int[] rightSamples = right.copyInterleavedStereo();
         int[] stereoSamples = stereo.copyInterleavedStereo();
         for (int frame = 0; frame < stereo.getFrameCount(); frame++) {
-            eq("stereo planar left " + frame, leftSamples[frame * 2], stereoSamples[frame * 2]);
-            eq("stereo planar right " + frame, rightSamples[frame * 2], stereoSamples[frame * 2 + 1]);
+            eq(label + " left " + frame, leftSamples[frame * 2], stereoSamples[frame * 2]);
+            eq(label + " right " + frame, rightSamples[frame * 2], stereoSamples[frame * 2 + 1]);
         }
-        eq("16k profile frame count", 8,
-                Mfi8001Decoder.decode(leftEncoded, 16000, 4, 1).getFrameCount());
-        eq("32k profile frame count", 4,
-                Mfi8001Decoder.decode(leftEncoded, 32000, 4, 1).getFrameCount());
-        DecodedSampledResource oddStereo = Mfi8001Decoder.decode(
-                new byte[] {0x12, 0x34, 0x56, 0x78, (byte)0x9A}, 8000, 4, 2);
-        eq("odd stereo trailing byte ignored", 16, oddStereo.getFrameCount());
     }
 
     private static void auditMfi8002ProfileAndRendererWiring() {
@@ -248,10 +293,13 @@ public final class AudioRendererAudit {
 
         NativeProgram unloadedStart = compile(Collections.<TrackEvent>singletonList(
                 compact8002Control(0, 0, 0x03, 0, 127)), 0);
-        if (new AudioRenderer().hasRenderableAudio(unloadedStart)) {
+        AudioRenderer unloadedRenderer = new AudioRenderer();
+        if (unloadedRenderer.hasRenderableAudio(unloadedStart)) {
             fail("0x8002 unloaded start", "renderer reported a missing cached slot as playable");
         }
-        assertPrepareRejected("0x8002 unloaded start fail-closed", unloadedStart);
+        if (unloadedRenderer.preparePlayback(unloadedStart).hasVoices()) {
+            fail("0x8002 unloaded start", "native no-op allocated a voice");
+        }
     }
 
     private static void auditMfi8002ControlClosure() {
@@ -508,6 +556,33 @@ public final class AudioRendererAudit {
         }, rendered.copyInterleavedPcm16());
     }
 
+    private static void auditActiveAdatTwoBitMatrix() {
+        int[] ratesKHz = {8, 16, 32};
+        int[] monoFrames = {64, 32, 16};
+        int[] stereoFrames = {32, 16, 8};
+        byte[] encoded = new byte[] {0x12, 0x34, 0x56, 0x78};
+        List<TrackEvent> start = Collections.<TrackEvent>singletonList(
+                resource(0, 0, 0x00, 0x00, 0x3C));
+        AudioRenderer renderer = new AudioRenderer();
+        for (int i = 0; i < ratesKHz.length; i++) {
+            NativeProgram mono = compile(activeAdatDocument(
+                    ratesKHz[i], 2, 1, encoded), start, 0);
+            if (!renderer.hasRenderableAudio(mono)) {
+                fail("active 2-bit mono " + ratesKHz[i] + "k", "not renderable");
+            }
+            eq("active 2-bit mono frames " + ratesKHz[i] + "k", monoFrames[i],
+                    renderer.render(mono).getFrameCount());
+
+            NativeProgram stereo = compile(activeAdatDocument(
+                    ratesKHz[i], 2, 2, encoded), start, 0);
+            if (!renderer.hasRenderableAudio(stereo)) {
+                fail("active 2-bit stereo " + ratesKHz[i] + "k", "not renderable");
+            }
+            eq("active 2-bit stereo frames " + ratesKHz[i] + "k", stereoFrames[i],
+                    renderer.render(stereo).getFrameCount());
+        }
+    }
+
     private static void auditActiveAdatResourceStop() {
         byte[] encoded = repeatedEncoded(128);
         List<TrackEvent> baselineEvents = new ArrayList<TrackEvent>();
@@ -637,15 +712,6 @@ public final class AudioRendererAudit {
     }
 
     private static void auditActiveAdatUnsupportedProfilesFailClosed() {
-        List<TrackEvent> start = Collections.<TrackEvent>singletonList(
-                resource(0, 0, 0x00, 0x00, 0x3C));
-        NativeProgram twoBit = compile(
-                activeAdatDocument(0x08, 0x02, 0x01, new byte[] {0x12, 0x34}), start, 0);
-        if (new AudioRenderer().hasRenderableAudio(twoBit)) {
-            fail("2-bit active adat", "renderer must remain fail-closed");
-        }
-        assertPrepareRejected("2-bit active adat fail-closed", twoBit);
-
         List<TrackEvent> routedEvents = new ArrayList<TrackEvent>();
         routedEvents.add(resource(0, 0, 0x90, 0x20));
         routedEvents.add(resource(1, 0, 0x00, 0x00, 0x3C));
@@ -694,6 +760,57 @@ public final class AudioRendererAudit {
         eq("machine voice duration cap", 32, rendered.getFrameCount());
         eqLong("machine capped linear duration", 1L,
                 renderer.estimateLinearDurationMillis(program));
+    }
+
+    private static void auditMachine8001TwoBitRuntime() {
+        byte[] encoded8 = repeatedEncoded(8);
+
+        NativeProgram counted8k = compile(Collections.<TrackEvent>singletonList(
+                machineStartWithControl(0, 0, 0x44, 0x00, 8, encoded8)), 0);
+        AudioRenderer renderer = new AudioRenderer();
+        if (!renderer.hasRenderableAudio(counted8k)) {
+            fail("0x106 8k 2-bit direct start", "not renderable");
+        }
+        eq("0x106 8k 2-bit frame count", 128, renderer.render(counted8k).getFrameCount());
+
+        NativeProgram inline16k = compile(Collections.<TrackEvent>singletonList(
+                inlineMachineWithControl(0, 0, 0x4C, 0x00, encoded8)), 0);
+        if (!renderer.hasRenderableAudio(inline16k)) {
+            fail("0x109 16k 2-bit direct start", "not renderable");
+        }
+        eq("0x109 16k 2-bit frame count", 64, renderer.render(inline16k).getFrameCount());
+
+        List<TrackEvent> loadThenStart = new ArrayList<TrackEvent>();
+        loadThenStart.add(inlineMachineWithControl(0, 0, 0x14, 0x00, encoded8));
+        loadThenStart.add(inlineMachineWithControl(1, 0, 0x94, 0x00, encoded8));
+        NativeProgram startExisting32k = compile(loadThenStart, 0);
+        if (!renderer.hasRenderableAudio(startExisting32k)) {
+            fail("0x109 32k 2-bit start-existing", "not renderable");
+        }
+        eq("0x109 32k 2-bit start-existing frames", 32,
+                renderer.render(startExisting32k).getFrameCount());
+
+        List<TrackEvent> pendingAppend = new ArrayList<TrackEvent>();
+        pendingAppend.add(machineStartWithControl(0, 0, 0x4C, 0x01, 4,
+                new byte[] {0x12, 0x34, 0x56, 0x78}));
+        pendingAppend.add(machineStartWithControl(1, 0, 0x0C, 0x00, 4,
+                new byte[] {(byte)0x9A, (byte)0xBC, (byte)0xDE, (byte)0xF0}));
+        NativeProgram pendingAppendProgram = compile(pendingAppend, 0);
+        if (!renderer.hasRenderableAudio(pendingAppendProgram)) {
+            fail("0x106 pending append restored op1", "not renderable");
+        }
+        eq("0x106 pending duration cache frames", 32,
+                renderer.render(pendingAppendProgram).getFrameCount());
+
+        List<TrackEvent> typeMismatch = new ArrayList<TrackEvent>();
+        typeMismatch.add(compact8002Load(
+                0, 0, 0, 0x00, 8000, nativeAwc2ProbeEncoded(81)));
+        typeMismatch.add(machineStartWithControl(1, 0, 0x44, 0x00, 8, encoded8));
+        NativeProgram typeMismatchProgram = compile(typeMismatch, 0);
+        if (renderer.hasRenderableAudio(typeMismatchProgram)) {
+            fail("pending 0x8002 to 0x8001 type mismatch", "unexpected voice");
+        }
+        renderer.preparePlayback(typeMismatchProgram);
     }
 
     private static void auditMachineLiveControls() {
@@ -874,12 +991,12 @@ public final class AudioRendererAudit {
                 0x00, 0x00, 0x00, 0x01,
                 0x12));
         NativeProgram program = compile(events, 0);
-        same("nonzero raw control byte typed but unsupported",
-                AudioProgram.RendererSupport.RECOGNIZED_UNSUPPORTED,
+        same("nonzero raw control byte keeps 0x8001 support",
+                AudioProgram.RendererSupport.VERIFIED_8001_4BIT,
                 program.audio.actions.get(0).rendererSupport);
         try {
             new AudioRenderer().nativeSampleRate(program);
-            fail("strict renderer boundary", "expected no verified audio start");
+            fail("pending load without start", "expected no sampled-audio voice");
         } catch (IllegalArgumentException expected) {
             // expected
         }
@@ -889,9 +1006,9 @@ public final class AudioRendererAudit {
                 0, 0, 0xC5, 0x01, 2, new byte[] {0x12, 0x34}));
         forcedOp3Load.add(compact8002Control(1, 1, 0x03, 0, 127));
         NativeProgram forcedOp3Program = compile(forcedOp3Load, 1);
-        assertDiagnostic("AUDIO_RENDERER_8001_PROFILE_UNSUPPORTED", forcedOp3Program);
-        assertPrepareRejected(
-                "raw-1 incoming op3 forces unsupported 0x8001 load", forcedOp3Program);
+        if (!new AudioRenderer().hasRenderableAudio(forcedOp3Program)) {
+            fail("raw-1 incoming op3 forced load", "compact start did not reach loaded 0x8001");
+        }
 
         List<TrackEvent> unverifiedControl = new ArrayList<TrackEvent>();
         unverifiedControl.add(compact8002Load(

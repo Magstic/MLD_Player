@@ -127,44 +127,15 @@ final class MachineSlotInterpreter {
                 : MachineAudioSupport.durationMilliseconds(
                         durationByteCount, format.sampleRate, format.codedBits);
 
-        boolean verifiedLegacyPath = countedDuration
-                && match.descriptorIndex == 23
-                && operation == 1
-                && rawFlags == 0
-                && format != null
-                && format.codedBits == 4
-                && format.channelCount == 1;
-        AudioProgram.RendererSupport support = verifiedLegacyPath
-                ? AudioProgram.RendererSupport.VERIFIED_8001_4BIT
-                : AudioProgram.RendererSupport.RECOGNIZED_UNSUPPORTED;
+        AudioProgram.RendererSupport support = format == null
+                ? AudioProgram.RendererSupport.RECOGNIZED_UNSUPPORTED
+                : (format.codedBits == 2
+                        ? AudioProgram.RendererSupport.VERIFIED_8001_2BIT
+                        : AudioProgram.RendererSupport.VERIFIED_8001_4BIT);
 
         boolean mayExecute = operation != 3 || controlFlag == 1;
         boolean mayLoad = operation == 0 || operation == 1
                 || (controlFlag == 1 && operation != 2);
-        if (format != null && format.codedBits == 2 && mayExecute) {
-            MachineAudioSupport.unsupported(
-                    diagnostics,
-                    event,
-                    "AUDIO_RENDERER_8001_2BIT_UNSUPPORTED",
-                    "MFiAudio type 0x8001 2-bit G.726 is recognized; decoder support is not implemented.");
-        } else if (format != null && format.codedBits == 4 && mayExecute && !verifiedLegacyPath) {
-            String reason;
-            if (match.descriptorIndex != 23 || !countedDuration) {
-                reason = "only the verified legacy 71:84 descriptor is renderable";
-            } else if (operation != 1) {
-                reason = "only verified 71:84 mode/operation 1 is renderable";
-            } else if (rawFlags != 0) {
-                reason = "current renderer coverage requires raw control byte 0";
-            } else {
-                reason = "the profile is not enabled by the renderer";
-            }
-            MachineAudioSupport.unsupported(
-                    diagnostics,
-                    event,
-                    "AUDIO_RENDERER_8001_PROFILE_UNSUPPORTED",
-                    "Recognized 4-bit 0x8001 audio is outside the verified renderer profile: "
-                            + reason + ".");
-        }
         AudioProgram.ActionKind actionKind = operationKind(match.handlerId, operation);
         // Keep the body remainder for every cached 0x8001 operation. Pending state or
         // control bit0 can replace the incoming operation with a load at execution time.
