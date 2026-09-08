@@ -20,11 +20,11 @@ However, the wide range of available SF2 SoundFonts can still provide many diffe
 
 | MFi | Support |
 |---|---|
-| MFi 1 | `█████████▌` ~95% |
-| MFi 2 | `█████████░` ~90% |
-| MFi 3 | `███████▌░░` ~75% |
-| MFi 4 | `██████▌░░░` ~65% |
-| MFi 5 | `█████▌░░░░` ~55% |
+| MFi 1 | `██████████` ~99% |
+| MFi 2 | `█████████▊` ~98% |
+| MFi 3 | `█████████▎` ~93% |
+| MFi 4 | `████████▌░` ~85% |
+| MFi 5 | `███████▌░░` ~75% |
 
 
 ## Play
@@ -76,7 +76,7 @@ ant
 
 **[L-Garden](https://magstic.art/2026/01/08/13/)**: Especially Mr. Scirocco, whose BGM compositions drove me to complete this project.
 
-**[ChatGPT 5.4](https://chatgpt.com/)**: Carried out 100% of the reverse engineering and 99% of the code cleanup.
+**[ChatGPT](https://chatgpt.com/)**: Reverse engineering. 5.4: 80% Melody /  5.6 Sol: 20% Melody, 90% Sampling / 6 Astra: 10% Sampling.
 
 **[Keitai Archive](https://keitaiarchive.org/)**: Preserved a massive collection of Keitai games.
 

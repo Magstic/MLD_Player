@@ -1,6 +1,6 @@
 # MLD Canonical Spec
 
->The MLD (MFi) specification was obtained through static reverse engineering of the DoJa Soundlib(MFi Player) and completed by GPT 5.4.
+>The MLD (MFi) specification was obtained through static reverse engineering of the DoJa Soundlib(MFi Player) and completed by GPT 5.4 & 5.6 Sol.
 
 >Since this project implements playback via MIDI mapping, the above specification may contain inconsistencies with the project’s code.
 
