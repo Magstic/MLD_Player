@@ -12,6 +12,10 @@ src/
                 MelodyProgram            — note/system native state
                 AudioProgram             — typed resource/machine audio semantics
                 Diagnostic               — structured unsupported/unresolved evidence
+  mld/compile/  MldCompiler               — sole application-neutral read/decode/compile/project owner
+                MldCompilation            — immutable compiled aggregate for in-repo composition
+  mld/api/      MldConverter              — public conversion API
+                MldConversion, MldPcm16   — output-oriented public library boundary
   midi/         MidiProjector, MidiPlan  — host MIDI projection
                 MidiLiveProjector         — repeated DD events -> MIDI
                 MidiPlanSegmenter         — export slicing for native infinite intro/cycle
@@ -42,6 +46,7 @@ src/
                 SwingPlayerController/View      — GUI orchestration / widget presentation
                 PlaylistState                   — GUI playlist state
 src_test/       test-only regression / integration / architecture sources
+dist/           mld-player.jar (generated)
 docs/           canonical specs
 tools/          probe script
 ```

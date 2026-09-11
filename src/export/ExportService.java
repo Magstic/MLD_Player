@@ -17,23 +17,16 @@ import audio.AudioRenderer;
 import audio.StereoPcm;
 import midi.MidiPlan;
 import midi.MidiPlanSegmenter;
-import midi.MidiProjector;
 import midi.MidiSequenceEncoder;
-import mld.decode.DecodedTrack;
-import mld.decode.TrackDecoder;
-import mld.format.MldDocument;
-import mld.format.MldReader;
-import mld.semantic.NativeCompiler;
+import mld.compile.MldCompilation;
+import mld.compile.MldCompiler;
 import mld.semantic.NativeProgram;
 
 /** Simple user-facing MLD export orchestration: AUTO, MIDI, or sampled-audio WAV. */
 public final class ExportService {
     public static final String OUTPUT_DIRECTORY_NAME = "MFiExport";
 
-    private final MldReader reader = new MldReader();
-    private final TrackDecoder decoder = new TrackDecoder();
-    private final NativeCompiler compiler = new NativeCompiler();
-    private final MidiProjector midiProjector = new MidiProjector();
+    private final MldCompiler compiler = new MldCompiler();
     private final MidiSequenceEncoder midiEncoder = new MidiSequenceEncoder();
     private final MidiPlanSegmenter midiSegmenter = new MidiPlanSegmenter();
     private final AudioRenderer audioRenderer = new AudioRenderer();
@@ -75,10 +68,9 @@ public final class ExportService {
             }
             String stem = uniqueStem(fileStem(inputPath), outputDir, usedStems);
             try {
-                MldDocument document = reader.read(inputPath);
-                List<DecodedTrack> decodedTracks = decoder.decodeAll(document);
-                NativeProgram program = compiler.compile(document, decodedTracks);
-                MidiPlan midi = midiProjector.project(program);
+                MldCompilation compilation = compiler.compile(inputPath);
+                NativeProgram program = compilation.getNativeProgram();
+                MidiPlan midi = compilation.getMidiPlan();
                 exportPreparedToRoot(program, midi, inputPath, outputDir, stem, actualMode);
                 exportedCount++;
             } catch (IOException | InvalidMidiDataException | IllegalArgumentException e) {

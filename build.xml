@@ -58,6 +58,7 @@
 
     <target name="-test" depends="-test-compile">
         <java classname="mld.format.FormatDecodeFoundationAudit" classpathref="test.classpath" fork="true" failonerror="true"/>
+        <java classname="mld.api.PublicApiAudit" classpathref="test.classpath" fork="true" failonerror="true"/>
         <java classname="architecture.ArchitectureClosureAudit" classpathref="test.classpath" fork="true" failonerror="true"/>
         <java classname="main.ApplicationCompositionAudit" classpathref="test.classpath" fork="true" failonerror="true"/>
         <java classname="export.ExportSystemAudit" classpathref="test.classpath" fork="true" failonerror="true"/>
@@ -75,7 +76,7 @@
     </target>
 
 
-    <target name="jar" depends="-test" description="Run the full test gate and build the runnable jar.">
+    <target name="jar" depends="-test" description="Run the full test gate and build mld-player.jar.">
         <jar destfile="${dist.dir}/${jar.name}" basedir="${classes.dir}">
             <manifest>
                 <attribute name="Main-Class" value="${jar.main.class}"/>

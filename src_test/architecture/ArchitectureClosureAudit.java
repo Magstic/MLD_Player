@@ -32,6 +32,7 @@ public final class ArchitectureClosureAudit {
         auditLegacyPaths(sourceRoot);
         auditPackagePaths(sourceRoot, sources);
         auditDependencies(sourceRoot, sources);
+        auditCompilationOwnership(sourceRoot, sources);
         auditMldFormatOwnership(sourceRoot);
         auditSemanticBoundary(sourceRoot);
         auditAudioOwnership(sourceRoot, sources);
@@ -80,16 +81,18 @@ public final class ArchitectureClosureAudit {
         allowed.put("mld.format", set("java"));
         allowed.put("mld.decode", set("java", "mld.format"));
         allowed.put("mld.semantic", set("java", "mld.decode", "mld.format"));
+        allowed.put("mld.compile", set("java", "midi", "mld.decode", "mld.format", "mld.semantic"));
+        allowed.put("mld.api", set("java", "javax.sound.midi", "audio", "midi", "mld.compile", "mld.semantic"));
         allowed.put("midi", set("java", "javax.sound.midi", "mld.semantic"));
         allowed.put("audio", set("java", "mld.semantic"));
         allowed.put("normalize", set("java", "mld.decode"));
         allowed.put("playback", set(
                 "java", "javax.sound.midi", "javax.sound.sampled", "audio", "midi", "mld.semantic"));
         allowed.put("export", set(
-                "java", "javax.sound.midi", "audio", "midi", "mld.decode", "mld.format", "mld.semantic"));
+                "java", "javax.sound.midi", "audio", "midi", "mld.compile", "mld.decode", "mld.format", "mld.semantic"));
         allowed.put("main", set(
                 "java", "javax.sound.midi", "javax.swing", "java.awt", "audio", "export", "midi",
-                "mld.decode", "mld.format", "mld.semantic", "normalize", "playback"));
+                "mld.compile", "mld.decode", "mld.format", "mld.semantic", "normalize", "playback"));
 
         for (Path source : sources) {
             String area = area(sourceRoot.relativize(source));
@@ -105,6 +108,22 @@ public final class ArchitectureClosureAudit {
                 }
             }
         }
+    }
+
+
+    private static void auditCompilationOwnership(Path sourceRoot, List<Path> sources) throws IOException {
+        assertExclusiveToken(
+                sourceRoot, sources,
+                "new TrackDecoder()",
+                "mld/compile/MldCompiler.java");
+        assertExclusiveToken(
+                sourceRoot, sources,
+                "new NativeCompiler()",
+                "mld/compile/MldCompiler.java");
+        assertExclusiveToken(
+                sourceRoot, sources,
+                "new MidiProjector()",
+                "mld/compile/MldCompiler.java");
     }
 
     private static void auditSemanticBoundary(Path sourceRoot) throws IOException {
@@ -326,6 +345,8 @@ public final class ArchitectureClosureAudit {
         if (path.startsWith("mld/format/")) return "mld.format";
         if (path.startsWith("mld/decode/")) return "mld.decode";
         if (path.startsWith("mld/semantic/")) return "mld.semantic";
+        if (path.startsWith("mld/compile/")) return "mld.compile";
+        if (path.startsWith("mld/api/")) return "mld.api";
         int slash = path.indexOf('/');
         return slash >= 0 ? path.substring(0, slash) : path;
     }

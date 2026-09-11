@@ -29,6 +29,8 @@ MLD bytes
 - `mld.format`：只負責容器結構與原始資料。
 - `mld.decode`：只負責事件 framing、解碼與 descriptor matching。
 - `mld.semantic`：只表達 MLD 原生語意；不得依賴 MIDI、Java Sound、Swing、播放設備或檔案匯出。
+- `mld.compile`：唯一的 application-neutral `read → decode → native compile → MIDI projection` 編排；不得加入 UI、設備、檔案輸出或播放政策。
+- `mld.api`：`mld-player.jar` 對外的穩定 conversion facade；不得在 public signature 暴露 `mld.compile`、`mld.format`、`mld.decode`、`mld.semantic`、`midi` 或 `audio` 內部型別。
 - `midi`：負責 `NativeProgram → MidiPlan` 投影，以及 `MidiPlan` 的分段與序列化；不得負責設備或檔案寫入。
 - `audio`：負責已驗證 sampled-audio 的解碼、混音、PCM source 與時長估算；不得擁有 Java Sound 設備。
 - `normalize`：保留 machine-dependent forensic normalization，CLI 仍有 production 用途。
@@ -43,7 +45,8 @@ MLD bytes
 - `MidiSequenceEncoder`：唯一的 `MidiPlan → Sequence` serializer。
 - `MidiPlanSegmenter`：唯一的匯出用 MIDI 區段切割與起始狀態補齊 owner；不得負責序列化或寫檔。
 - `ExportService`：唯一的使用者匯出與檔案寫入入口，包括完整／intro／loop MIDI artifact 編排。
-- `MldApplicationWorkflow`：CLI／Swing 共用的 load → decode → compile → project 流程。
+- `MldCompiler`：唯一的 application-neutral load/read → decode → native compile → MIDI projection 流程。
+- `MldApplicationWorkflow`：CLI／Swing 共用的 application composition，必須消費 `MldCompiler`，不得重新建立編譯 pipeline。
 - `MidiOutputCatalog`：MIDI 設備列舉。
 - `FluidSynthBackend`：FluidSynth 程序與協定。
 - `PcmOutputConnection`：Java Sound output line。

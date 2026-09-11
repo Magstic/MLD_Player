@@ -2,26 +2,17 @@ package main;
 
 import java.io.IOException;
 import java.nio.file.Path;
-import java.util.List;
 
 import audio.AudioPlaybackSource;
 import audio.AudioRenderer;
 import midi.MidiPlan;
-import midi.MidiProjector;
-import mld.decode.DecodedTrack;
-import mld.decode.TrackDecoder;
-import mld.format.MldDocument;
-import mld.format.MldReader;
-import mld.semantic.NativeCompiler;
-import mld.semantic.NativeProgram;
+import mld.compile.MldCompilation;
+import mld.compile.MldCompiler;
 import playback.PlaybackContent;
 
 /** Shared application workflow used by CLI and Swing composition layers. */
 final class MldApplicationWorkflow {
-    private final MldReader reader = new MldReader();
-    private final TrackDecoder decoder = new TrackDecoder();
-    private final NativeCompiler compiler = new NativeCompiler();
-    private final MidiProjector midiProjector = new MidiProjector();
+    private final MldCompiler compiler = new MldCompiler();
     private final AudioRenderer audioRenderer = new AudioRenderer();
 
     ApplicationTrack load(Path inputPath) throws IOException {
@@ -29,25 +20,23 @@ final class MldApplicationWorkflow {
             throw new IllegalArgumentException("Input path is required.");
         }
         Path normalizedPath = inputPath.toAbsolutePath().normalize();
-        MldDocument document = reader.read(normalizedPath);
-        List<DecodedTrack> decodedTracks = decoder.decodeAll(document);
-        NativeProgram program = compiler.compile(document, decodedTracks);
-        MidiPlan midi = midiProjector.project(program);
-        boolean renderableAudio = audioRenderer.hasRenderableAudio(program);
+        MldCompilation compilation = compiler.compile(normalizedPath);
+        MidiPlan midi = compilation.getMidiPlan();
+        boolean renderableAudio = audioRenderer.hasRenderableAudio(compilation.getNativeProgram());
         long durationMillis = estimateDurationMillis(midi);
         if (renderableAudio) {
             durationMillis = Math.max(
                     durationMillis,
-                    audioRenderer.estimateLinearDurationMillis(program));
+                    audioRenderer.estimateLinearDurationMillis(compilation.getNativeProgram()));
         }
         return new ApplicationTrack(
                 normalizedPath,
-                document,
-                decodedTracks,
-                program,
+                compilation.getDocument(),
+                compilation.getDecodedTracks(),
+                compilation.getNativeProgram(),
                 midi,
-                cleanInfoText(document.lastInfoText("titl")),
-                cleanInfoText(document.lastInfoText("copy")),
+                cleanInfoText(compilation.getDocument().lastInfoText("titl")),
+                cleanInfoText(compilation.getDocument().lastInfoText("copy")),
                 durationMillis,
                 renderableAudio);
     }
