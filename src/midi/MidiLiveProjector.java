@@ -14,7 +14,6 @@ import mld.semantic.NativeProgram;
 /** Projects one continuing native semantic cycle into direct-playback MIDI events. */
 public final class MidiLiveProjector {
     private final int[] outputChannels = new int[16];
-    private final boolean[] specialChannels = new boolean[16];
     private final List<String> warnings = new ArrayList<String>();
     private final MidiProjectionState state;
 
@@ -28,7 +27,6 @@ public final class MidiLiveProjector {
         for (MidiPlan.OutputLaneAudit lane : basePlan.outputLanePlan) {
             if (lane.logicalChannel < 0 || lane.logicalChannel >= outputChannels.length) continue;
             outputChannels[lane.logicalChannel] = lane.midiChannel;
-            specialChannels[lane.logicalChannel] = lane.authoritativeSpecialLane;
         }
         state = new MidiProjectionState(new MidiTimingMapper(baseProgram.timing), warnings);
         state.project(baseProgram);
@@ -55,7 +53,7 @@ public final class MidiLiveProjector {
                 : cycle.program.melody.noteActions) {
             int logical = action.logicalChannel;
             if (logical < 0 || logical >= 16) continue;
-            int base = specialChannels[logical] || action.channel.mode == 1 ? 35 : 45;
+            int base = action.channel.percussion ? 35 : 45;
             int note = clamp(0, 127, base + action.pitchOffset);
             result.add(new Event(
                     cycle.transportMicrosAtRawTick(cycle.rawStartTick + action.rawTick),

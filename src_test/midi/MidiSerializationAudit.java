@@ -104,7 +104,7 @@ public final class MidiSerializationAudit {
         List<MidiPlan.CompiledNote> notes = Collections.singletonList(new MidiPlan.CompiledNote(
                 2, 0, 4, 4, 5, 60, 100, 0, 10, 0L, 100L));
         MidiLaneMapper.LaneTracker lanes = new MidiLaneMapper.LaneTracker();
-        lanes.observeActive(4);
+        lanes.observeNote(4, false);
         List<MidiPlan.TempoPoint> tempos = tempos(tempo(0L, 500000));
         MidiLaneMapper.Result mapped = MidiLaneMapper.finalizeOutput(
                 1, new int[] {4, 1, 2, 3}, lanes, notes, controls, tempos, noLoop(),

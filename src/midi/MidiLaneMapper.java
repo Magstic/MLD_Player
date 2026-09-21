@@ -103,7 +103,7 @@ final class MidiLaneMapper {
         // The supported PSM profile reserves channel 9 and compacts ordinary lanes.
         int nextMelodicChannel = 0;
         for (int logicalChannel = 0; logicalChannel < MIDI_CHANNEL_COUNT; logicalChannel++) {
-            if (!outputLaneTracker.isActive(logicalChannel)) {
+            if (!outputLaneTracker.hasNoteUse(logicalChannel)) {
                 continue;
             }
             if (outputLaneTracker.isAuthoritativeSpecial(logicalChannel)) {
@@ -213,12 +213,35 @@ final class MidiLaneMapper {
 
     static final class LaneTracker {
         private int activeMask = 0;
+        private int ordinaryNoteMask = 0;
+        private int percussionNoteMask = 0;
 
         void observeActive(int logicalChannel) {
             if (logicalChannel < 0 || logicalChannel >= MIDI_CHANNEL_COUNT) {
                 return;
             }
             activeMask |= (1 << logicalChannel);
+        }
+
+        void observeNote(int logicalChannel, boolean percussion) {
+            if (logicalChannel < 0 || logicalChannel >= MIDI_CHANNEL_COUNT) {
+                return;
+            }
+            int bit = 1 << logicalChannel;
+            activeMask |= bit;
+            if (percussion) {
+                percussionNoteMask |= bit;
+            } else {
+                ordinaryNoteMask |= bit;
+            }
+        }
+
+        boolean hasNoteUse(int logicalChannel) {
+            if (logicalChannel < 0 || logicalChannel >= MIDI_CHANNEL_COUNT) {
+                return false;
+            }
+            int bit = 1 << logicalChannel;
+            return ((ordinaryNoteMask | percussionNoteMask) & bit) != 0;
         }
 
         boolean isActive(int logicalChannel) {
@@ -228,7 +251,9 @@ final class MidiLaneMapper {
         }
 
         boolean isAuthoritativeSpecial(int logicalChannel) {
-            return logicalChannel == PSM_GM_DRUM_CHANNEL;
+            return logicalChannel >= 0
+                    && logicalChannel < MIDI_CHANNEL_COUNT
+                    && ((percussionNoteMask >>> logicalChannel) & 1) != 0;
         }
     }
 }

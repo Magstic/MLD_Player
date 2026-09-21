@@ -68,7 +68,7 @@ final class MelodyState {
                             + "; preserving its silent gate state for retrigger semantics.");
         }
         int pitchOffset = e.pitch + octaveOffset(e.octaveShift);
-        int nativeNote = baseForMode(ch.mode) + pitchOffset;
+        int nativeNote = baseForPercussion(ch.percussion) + pitchOffset;
         int velocity = clamp(1, 127, e.hasExtraByte() ? e.velocity * 2 : 126);
         int rawEnd = e.rawTick + e.gate;
         Integer key = (logical << 8) | (nativeNote & 255);
@@ -128,6 +128,7 @@ final class MelodyState {
                 if (logical < channels.length) {
                     ChannelState ch = channels[logical];
                     ch.mode = e.value & 7;
+                    ch.percussion = (e.value & 1) != 0;
                     if (ch.mode == 1) applyNativePatchHelperState(ch);
                     record(e, logical, PATH_PATCH, order, ch);
                 }
@@ -248,6 +249,7 @@ final class MelodyState {
         out.append('|');
         for (ChannelState channel : channels) {
             out.append(channel.mode).append(',')
+                    .append(channel.percussion ? 1 : 0).append(',')
                     .append(channel.bank).append(',')
                     .append(channel.program).append(',')
                     .append(channel.level).append(',')
@@ -279,6 +281,7 @@ final class MelodyState {
     private static StringBuilder appendSnapshot(
             StringBuilder out, MelodyProgram.ChannelSnapshot channel) {
         return out.append(channel.mode).append(',')
+                .append(channel.percussion ? 1 : 0).append(',')
                 .append(channel.bank).append(',')
                 .append(channel.program).append(',')
                 .append(channel.level).append(',')
@@ -437,6 +440,7 @@ final class MelodyState {
         NativePatchState p = resolveOfficialNativePatchState(c);
         return new MelodyProgram.ChannelSnapshot(
                 c.mode,
+                c.percussion,
                 c.bank,
                 c.program,
                 c.level,
@@ -484,8 +488,8 @@ final class MelodyState {
         return t * 4 + v;
     }
 
-    private static int baseForMode(int mode) {
-        return mode == 1 ? 35 : 45;
+    private static int baseForPercussion(boolean percussion) {
+        return percussion ? 35 : 45;
     }
 
     private static int octaveOffset(int x) {
@@ -503,6 +507,8 @@ final class MelodyState {
     private static ChannelState[] createChannelStates() {
         ChannelState[] s = new ChannelState[MAX_LOGICAL_CHANNELS];
         for (int i = 0; i < s.length; i++) s[i] = new ChannelState();
+        // PSMPLAY: initial percussion mask = 0x0200.
+        if (s.length > 9) s[9].percussion = true;
         return s;
     }
 
@@ -526,6 +532,7 @@ final class MelodyState {
 
     private static final class ChannelState {
         int mode;
+        boolean percussion;
         int bank;
         int program;
         int level = DEFAULT_LEVEL;

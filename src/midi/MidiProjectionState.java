@@ -84,11 +84,12 @@ final class MidiProjectionState {
             warnHostChannel(l, "note");
             return -1;
         }
-        laneTracker.observeActive(l);
+        boolean percussion = n.channel.percussion;
+        laneTracker.observeNote(l, percussion);
         ProjectionChannel c = channels[l];
         c.copyNative(n.channel);
         emitPatchIfNeeded(c, l, n.sourceTrack, -1, "note_patch_sync", n.rawStartTick, timing.rawToMidiTick(n.rawStartTick));
-        int base = laneTracker.isAuthoritativeSpecial(l) ? 35 : baseForMode(n.channel.mode);
+        int base = percussion ? 35 : 45;
         int midiNote = clamp(0, 127, base + n.pitchOffset);
         long start = timing.rawToMidiTick(n.rawStartTick);
         long end = normalizeMidiEnd(start, timing.rawToMidiTick(n.rawEndTick));
@@ -283,10 +284,6 @@ final class MidiProjectionState {
         return clamp(0, 16383, (8 * (c.pitchFine + 32 * c.pitchCoarse)) - 256);
     }
 
-    private static int baseForMode(int m) {
-        return m == 1 ? 35 : 45;
-    }
-
     private static long normalizeMidiEnd(long s, long e) {
         return e <= s ? s + 1 : e;
     }
@@ -312,6 +309,7 @@ final class MidiProjectionState {
     private static MelodyProgram.ChannelSnapshot defaultSnapshot() {
         return new MelodyProgram.ChannelSnapshot(
                 0,
+                false,
                 0,
                 0,
                 DEFAULT_LEVEL,

@@ -98,6 +98,7 @@ public final class MelodyProgram {
 
     public static final class ChannelSnapshot {
         public final int mode;
+        public final boolean percussion;
         public final int bank;
         public final int program;
         public final int level;
@@ -111,20 +112,21 @@ public final class MelodyProgram {
         public final int nativeSub;
         public final int nativeValue;
 
-        public ChannelSnapshot(int a, int b, int c, int d, int e, int f, int g, int h, int i, boolean j, int k, int l, int m) {
+        public ChannelSnapshot(int a, boolean b, int c, int d, int e, int f, int g, int h, int i, int j, boolean k, int l, int m, int n) {
             mode = a;
-            bank = b;
-            program = c;
-            level = d;
-            pan = e;
-            pitchCoarse = f;
-            pitchFine = g;
-            pitchRange = h;
-            modulation = i;
-            noteOnSuppressed = j;
-            nativeKind = k;
-            nativeSub = l;
-            nativeValue = m;
+            percussion = b;
+            bank = c;
+            program = d;
+            level = e;
+            pan = f;
+            pitchCoarse = g;
+            pitchFine = h;
+            pitchRange = i;
+            modulation = j;
+            noteOnSuppressed = k;
+            nativeKind = l;
+            nativeSub = m;
+            nativeValue = n;
         }
     }
 

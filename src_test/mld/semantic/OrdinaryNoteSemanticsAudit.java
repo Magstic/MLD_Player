@@ -23,6 +23,12 @@ public final class OrdinaryNoteSemanticsAudit {
         auditExpiryTie();
         auditZeroGateMidiBoundary();
         auditPatchModeHelperBoundary();
+        auditInitialPercussionMask();
+        auditBaPercussionBitAndModeSeparation();
+        auditBaCanReturnChannel9ToOrdinary();
+        auditPercussionReset();
+        auditControlOnlyLaneDoesNotCompactNotes();
+        auditMixedLaneUsesNoteSnapshotAndPercussionMapping();
         auditSilentGateState();
         auditUnrepresentableNativeGateDoesNotExtendMidi();
         auditSoundingGateStateSurvivesSuppression();
@@ -133,6 +139,95 @@ public final class OrdinaryNoteSemanticsAudit {
         eq("mode2 ordinary pitch base", 55, result.midi.notes.get(0).midiNote);
     }
 
+    private static void auditInitialPercussionMask() {
+        List<TrackEvent> events = new ArrayList<TrackEvent>();
+        events.add(mapVoice(0, 0, 9));
+        events.add(note(1, 1, 1, 0, 10, 1, 20, 0, 1));
+        SemanticTestSupport result = compile(events, 2);
+        MelodyProgram.NativeNote note = result.program.melody.notes.get(0);
+        eq("initial ch9 mode", 0, note.channel.mode);
+        if (!note.channel.percussion) fail("initial ch9 percussion", "initial logical channel 9 must be percussion");
+        eq("initial ch9 native pitch", 45, note.nativeNote);
+        eq("initial ch9 MIDI pitch", 45, result.midi.notes.get(0).midiNote);
+        eq("initial ch9 MIDI channel", 9, result.midi.notes.get(0).midiChannel);
+    }
+
+    private static void auditBaPercussionBitAndModeSeparation() {
+        List<TrackEvent> percussionEvents = new ArrayList<TrackEvent>();
+        percussionEvents.add(mapVoice(0, 0, 6));
+        percussionEvents.add(system(1, 1, 1, 0xBA, (6 << 3) | 1)); // mode 1 + percussion bit.
+        percussionEvents.add(note(2, 1, 2, 0, 10, 1, 20, 0, 1));
+        SemanticTestSupport percussion = compile(percussionEvents, 3);
+        MelodyProgram.NativeNote percussionNote = percussion.program.melody.notes.get(0);
+        eq("BA mode1 remains mode1", 1, percussionNote.channel.mode);
+        if (!percussionNote.channel.percussion) fail("BA mode1 percussion", "bit 0 must set percussion independently");
+        eq("BA mode1 percussion pitch", 45, percussion.midi.notes.get(0).midiNote);
+        eq("BA mode1 percussion channel", 9, percussion.midi.notes.get(0).midiChannel);
+
+        List<TrackEvent> mode2Events = new ArrayList<TrackEvent>();
+        mode2Events.add(system(0, 0, 0, 0xBA, 0x02)); // mode 2, percussion bit clear.
+        mode2Events.add(note(1, 1, 1, 0, 10, 1, 20, 0, 1));
+        SemanticTestSupport mode2 = compile(mode2Events, 2);
+        MelodyProgram.NativeNote mode2Note = mode2.program.melody.notes.get(0);
+        eq("BA mode2 remains mode2", 2, mode2Note.channel.mode);
+        if (mode2Note.channel.percussion) fail("BA mode2 percussion", "mode 2 must remain ordinary");
+        eq("BA mode2 ordinary pitch", 55, mode2.midi.notes.get(0).midiNote);
+    }
+
+    private static void auditBaCanReturnChannel9ToOrdinary() {
+        List<TrackEvent> events = new ArrayList<TrackEvent>();
+        events.add(mapVoice(0, 0, 9));
+        events.add(system(1, 1, 1, 0xBA, 9 << 3)); // mode 0 + percussion bit clear.
+        events.add(note(2, 1, 2, 0, 10, 1, 20, 0, 1));
+        SemanticTestSupport result = compile(events, 3);
+        MelodyProgram.NativeNote note = result.program.melody.notes.get(0);
+        if (note.channel.percussion) fail("BA ch9 ordinary", "BA bit 0 clear must disable percussion on channel 9");
+        eq("BA ch9 ordinary pitch", 55, result.midi.notes.get(0).midiNote);
+        eq("BA ch9 ordinary output channel", 0, result.midi.notes.get(0).midiChannel);
+    }
+
+    private static void auditPercussionReset() {
+        List<TrackEvent> events = new ArrayList<TrackEvent>();
+        events.add(mapVoice(0, 0, 9));
+        events.add(system(1, 1, 1, 0xBA, 9 << 3));
+        events.add(note(2, 1, 2, 0, 10, 1, 20, 0, 1));
+        events.add(system(3, 1, 3, 0xBF, 0));
+        events.add(mapVoice(4, 4, 9));
+        events.add(note(5, 1, 5, 0, 10, 1, 20, 0, 1));
+        SemanticTestSupport result = compile(events, 6);
+        eq("BF reset note count", 2, result.program.melody.notes.size());
+        MelodyProgram.NativeNote beforeReset = result.program.melody.notes.get(0);
+        MelodyProgram.NativeNote afterReset = result.program.melody.notes.get(1);
+        if (beforeReset.channel.percussion) fail("BF pre-reset percussion", "BA must leave channel 9 ordinary before reset");
+        if (!afterReset.channel.percussion) fail("BF post-reset percussion", "BF must restore initial channel 9 percussion");
+        eq("BF pre-reset pitch", 55, result.midi.notes.get(0).midiNote);
+        eq("BF post-reset pitch", 45, result.midi.notes.get(1).midiNote);
+    }
+
+    private static void auditControlOnlyLaneDoesNotCompactNotes() {
+        List<TrackEvent> events = new ArrayList<TrackEvent>();
+        events.add(system(0, 0, 0, 0xBA, 0)); // control-only logical channel 0.
+        events.add(mapVoice(1, 1, 10));
+        events.add(note(2, 1, 2, 0, 10, 1, 20, 0, 1));
+        SemanticTestSupport result = compile(events, 3);
+        eq("control-only lane note count", 1, result.midi.notes.size());
+        eq("control-only lane leaves first sounding channel free", 0, result.midi.notes.get(0).midiChannel);
+    }
+
+    private static void auditMixedLaneUsesNoteSnapshotAndPercussionMapping() {
+        List<TrackEvent> events = new ArrayList<TrackEvent>();
+        events.add(mapVoice(0, 0, 6));
+        events.add(note(1, 1, 1, 0, 10, 1, 20, 0, 1)); // ordinary snapshot.
+        events.add(system(2, 1, 2, 0xBA, (6 << 3) | 1));
+        events.add(note(3, 1, 3, 0, 10, 1, 20, 0, 1)); // percussion snapshot.
+        SemanticTestSupport result = compile(events, 4);
+        eq("mixed lane note count", 2, result.program.melody.notes.size());
+        eq("mixed lane ordinary pitch", 55, result.midi.notes.get(0).midiNote);
+        eq("mixed lane percussion pitch", 45, result.midi.notes.get(1).midiNote);
+        eq("mixed lane ordinary note maps to percussion output", 9, result.midi.notes.get(0).midiChannel);
+        eq("mixed lane percussion note maps to percussion output", 9, result.midi.notes.get(1).midiChannel);
+    }
+
     private static void auditSilentGateState() {
         List<TrackEvent> events = new ArrayList<TrackEvent>();
         events.add(system(0, 0, 0, 0xBA, 0x02)); // mode cache -> 2
@@ -214,6 +309,10 @@ public final class OrdinaryNoteSemanticsAudit {
     private static SystemEvent system(int eventIndex, int delta, int rawTick, int command, int value) {
         int part = command >= 0xE0 && command <= 0xEF ? ((value >> 6) & 0x03) : -1;
         return new SystemEvent(0, eventIndex, delta, rawTick, command, value, "audit", part, -1);
+    }
+
+    private static SystemEvent mapVoice(int eventIndex, int rawTick, int logicalChannel) {
+        return system(eventIndex, rawTick, rawTick, 0xE5, logicalChannel);
     }
 
     private static NoteEvent requireNote(TrackEvent event, String name) {
