@@ -15,13 +15,16 @@ public final class PublicApiAudit {
     public static void main(String[] args) throws Exception {
         stablePublicSurface();
         melodyConversion();
+        loopedMelodyConversion();
         sampledConversion();
         System.out.println("PublicApiAudit: PASS");
     }
 
 
     private static void stablePublicSurface() {
-        Class<?>[] apiTypes = {MldConverter.class, MldConversion.class, MldPcm16.class};
+        Class<?>[] apiTypes = {
+                MldConverter.class, MldConversion.class, MldMidiPlayback.class, MldPcm16.class
+        };
         for (Class<?> type : apiTypes) {
             for (java.lang.reflect.Method method : type.getMethods()) {
                 if (method.getDeclaringClass() == Object.class) continue;
@@ -52,11 +55,26 @@ public final class PublicApiAudit {
         no("sampled absent", conversion.hasRenderableSampledAudio());
         Sequence sequence = conversion.createMidiSequence();
         yes("fresh sequence", sequence != null && sequence.getTracks().length > 0);
+        MldMidiPlayback playback = conversion.createMidiPlayback();
+        eq("linear MIDI segment count", 1, playback.getSegmentCount());
+        eq("linear MIDI loop segment", -1, playback.getLoopSegmentIndex());
         expectIllegalState("melody sampled render", new Action() {
             public void run() {
                 conversion.renderSampledPcm16();
             }
         });
+    }
+
+    private static void loopedMelodyConversion() throws Exception {
+        MldMidiPlayback audible = MldConverter.convert(loopFixture(true)).createMidiPlayback();
+        eq("audible intro segment count", 2, audible.getSegmentCount());
+        eq("audible intro loop segment", 1, audible.getLoopSegmentIndex());
+        yes("audible intro sequence", audible.createSegmentSequence(0).getTickLength() > 1L);
+        yes("audible loop sequence", audible.createSegmentSequence(1).getTickLength() > 1L);
+
+        MldMidiPlayback silent = MldConverter.convert(loopFixture(false)).createMidiPlayback();
+        eq("silent intro folded segment count", 1, silent.getSegmentCount());
+        eq("silent intro folded loop segment", 0, silent.getLoopSegmentIndex());
     }
 
     private static void sampledConversion() throws Exception {
@@ -86,6 +104,36 @@ public final class PublicApiAudit {
                 0, 0x05, 24,
                 24, (byte)0xFF, (byte)0xDF, 0
         });
+        out.flush();
+
+        byte[] body = chunks.toByteArray();
+        ByteArrayOutputStream file = new ByteArrayOutputStream();
+        DataOutputStream data = new DataOutputStream(file);
+        data.writeBytes("melo");
+        data.writeInt(5 + body.length);
+        data.writeShort(0);
+        data.writeByte(1);
+        data.writeByte(1);
+        data.writeByte(1);
+        data.write(body);
+        data.flush();
+        return file.toByteArray();
+    }
+
+    private static byte[] loopFixture(boolean audibleIntro) throws Exception {
+        ByteArrayOutputStream track = new ByteArrayOutputStream();
+        DataOutputStream events = new DataOutputStream(track);
+        if (audibleIntro) events.write(new byte[] {0, 0x05, 4});
+        events.write(new byte[] {10, (byte)0xFF, (byte)0xDD, 0x00});
+        events.write(new byte[] {2, 0x09, 4});
+        events.write(new byte[] {8, (byte)0xFF, (byte)0xDD, 0x01});
+        events.flush();
+
+        ByteArrayOutputStream chunks = new ByteArrayOutputStream();
+        DataOutputStream out = new DataOutputStream(chunks);
+        writeBe16Chunk(out, "note", new byte[] {0, 0});
+        writeBe16Chunk(out, "cuep", new byte[] {0, 0, 0, 0});
+        writeBe32Chunk(out, "trac", track.toByteArray());
         out.flush();
 
         byte[] body = chunks.toByteArray();

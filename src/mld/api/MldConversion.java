@@ -57,6 +57,16 @@ public final class MldConversion {
         return new MidiSequenceEncoder().encode(midiPlan).sequence;
     }
 
+    /**
+     * Describes the ordered MIDI resources needed for native loop-point playback.
+     * Control-only pre-roll before a loop is folded into the loop segment instead
+     * of becoming a silent standalone segment.
+     */
+    public MldMidiPlayback createMidiPlayback() {
+        if (!hasMidi) throw new IllegalStateException("MLD contains no renderable melody");
+        return new MldMidiPlayback(midiPlan);
+    }
+
     /** Renders verified sampled audio at the player's native renderer rate. */
     public MldPcm16 renderSampledPcm16() {
         if (!hasRenderableSampledAudio) {
