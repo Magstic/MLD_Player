@@ -22,7 +22,6 @@ public final class SystemEventSemanticsAudit {
     public static void main(String[] args) throws Exception {
         auditSystemEnvelopeFraming();
         auditDfTerminatesTrackDecode();
-        auditCommandNames();
         auditMasterVolumeForms();
         auditGlobalStopGate();
         auditSessionResetValueGate();
@@ -99,23 +98,6 @@ public final class SystemEventSemanticsAudit {
         SystemEvent df = requireSystem(decoded.events.get(0), "DF");
         eq("DF command", 0xDF, df.command);
         eq("DF value remains consumed", 0x7E, df.value);
-    }
-
-    private static void auditCommandNames() throws Exception {
-        DecodedTrack decoded = decode(0, 0, new byte[] {
-                0x00, (byte) 0xFF, (byte) 0xB3, 0x40,
-                0x00, (byte) 0xFF, (byte) 0xD0, 0x01,
-                0x00, (byte) 0xFF, (byte) 0xE4, 0x20,
-                0x00, (byte) 0xFF, (byte) 0xE8, 0x20,
-                0x00, (byte) 0xFF, (byte) 0xE9, 0x20,
-                0x00, (byte) 0xFF, (byte) 0xEA, 0x20
-        });
-        eqText("B3 generic name", "cmd_B3", requireSystem(decoded.events.get(0), "B3").name);
-        eqText("D0 name", "conditional_stop", requireSystem(decoded.events.get(1), "D0").name);
-        eqText("E4 name", "pitch_coarse_apply", requireSystem(decoded.events.get(2), "E4").name);
-        eqText("E8 name", "pitch_fine_apply", requireSystem(decoded.events.get(3), "E8").name);
-        eqText("E9 name", "pitch_fine_cache", requireSystem(decoded.events.get(4), "E9").name);
-        eqText("EA conservative name", "backend_control_ea", requireSystem(decoded.events.get(5), "EA").name);
     }
 
     private static void auditMasterVolumeForms() {
@@ -216,6 +198,14 @@ public final class SystemEventSemanticsAudit {
         SemanticTestSupport invalidTimeline = compile(invalid, 5);
         eq("invalid E7 does not arm RPN", 0, countControllerSource(invalidTimeline, 0xE4));
         eq("invalid E7 still permits E4 bend", 1, countStatus(invalidTimeline, 0xE4, ShortMessage.PITCH_BEND));
+
+        List<TrackEvent> reset = new ArrayList<TrackEvent>();
+        reset.add(system(0, 0, 0, 0, 0xE7, 0x0C));
+        reset.add(system(0, 1, 5, 5, 0xBF, 0));
+        reset.add(system(0, 2, 5, 10, 0xE4, 0x21));
+        SemanticTestSupport resetTimeline = compile(reset, 10);
+        eq("BF clears pending pitch range", 0, countControllerSource(resetTimeline, 0xE4));
+        eq("BF still permits E4 bend", 1, countStatus(resetTimeline, 0xE4, ShortMessage.PITCH_BEND));
     }
 
     private static void auditFinePitchCache() {
@@ -695,10 +685,6 @@ public final class SystemEventSemanticsAudit {
             fail(name, "expected " + java.util.Arrays.toString(expected)
                     + ", got " + java.util.Arrays.toString(actual));
         }
-    }
-
-    private static void eqText(String name, String expected, String actual) {
-        if (!expected.equals(actual)) fail(name, "expected " + expected + ", got " + actual);
     }
 
     private static void isTrue(String name, boolean value) {

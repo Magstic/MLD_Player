@@ -182,6 +182,10 @@ final class FluidSynthBackend {
                     command,
                     "-n",
                     "-q",
+                    // Desktop playback needs scheduling margin; Linux's 64-frame
+                    // default can force PipeWire to a ~1 ms quantum and underrun.
+                    "-z", "512",
+                    "-c", "8",
                     soundFont.toAbsolutePath().normalize().toString());
             builder.redirectErrorStream(true);
             process = builder.start();

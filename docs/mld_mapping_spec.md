@@ -144,11 +144,7 @@ Native state fields:
 - `E1`: `bank=value&0x3F`; helper runs in mode `1`
 - `BA`: channel=`(value>>3)&0x0F`, mode=`value&7`; helper runs for new mode `1`
 
-MIDI patch word:
-
-- `patch12 = (program & 0x3F) | ((bank & 0x3F) << 6)`
-
-Low-bank table for `(bank & 0x3E) == 0`:
+Melodic MIDI program for bank `0` or `1`:
 
 - `0 -> 0`
 - `1 -> 9`
@@ -156,14 +152,27 @@ Low-bank table for `(bank & 0x3E) == 0`:
 - `3 -> 24`
 - `4 -> 13`
 - `5 -> 74`
+- `6..63 -> 0`
+
+For bank `2..63`, MIDI program is `(program & 63) | ((bank & 1) << 6)`.
+No MIDI Bank Select controllers are emitted.
+
+Any logical channel containing a percussion note uses MIDI program `0` throughout
+the song, including patches before that note and after returning to melodic mode.
+Mode `1` without a percussion note does not trigger this rule.
 
 MIDI output:
 
 - message: Program Change
-- program: `patchWord & 0x7F`
+- program: the melodic value above, or `0` for a channel containing a percussion note
 - initial MIDI patch value: `0`
-- mode `1` entry can mark the current MIDI patch dirty
-- patch deduplication uses final MIDI patch state
+- both `E0` and `E1` immediately recompute the MIDI patch in modes `0/1`,
+  including `E1` before any `E0`
+- mode `1` entry also recomputes the MIDI patch
+- patch mapping reads the event's immutable native channel snapshot directly;
+  projection does not retain a duplicate native channel state
+- the MIDI control emitter deduplicates by final MIDI program per logical channel;
+  session reset clears this cache
 
 Patch state records retain native mode, bank, program, kind, sub, and value.
 
@@ -219,8 +228,8 @@ Source voice=`value>>6`. Payload=`value&0x3F`. The current voice map resolves th
 
 | MLD | Native state/action | MIDI bridge |
 |---|---|---|
-| `E0` | program cache + patch helper | MIDI patch update when eligible |
-| `E1` | bank cache; helper in mode1 | MIDI patch update in mode1 |
+| `E0` | program cache + patch helper | MIDI patch recomputed in ordinary modes 0/1 |
+| `E1` | bank cache; helper in mode1 | MIDI patch recomputed in ordinary modes 0/1 |
 | `E2` | absolute level | CC7 |
 | `E3` | pan | CC10 |
 | `E4` | coarse cache + pitch apply | pending pitch-range RPN, then pitch bend |

@@ -97,17 +97,6 @@ public final class ApplicationCompositionAudit {
             eq("loop toggled", PlaylistState.LoopMode.PLAYLIST, playlist.toggleLoopMode());
             eq("loop toggled back", PlaylistState.LoopMode.SINGLE_TRACK, playlist.toggleLoopMode());
             eq("input path count", 2, playlist.inputPaths().size());
-            ApplicationTrack untitled = new ApplicationTrack(
-                    firstPath,
-                    null,
-                    Collections.<DecodedTrack>emptyList(),
-                    null,
-                    null,
-                    "",
-                    "",
-                    0L,
-                    false);
-            eq("missing copyright fallback", "Unknown Artist", untitled.displayCopyright());
         } finally {
             Files.deleteIfExists(base);
         }

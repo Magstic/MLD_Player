@@ -507,7 +507,7 @@ final class MelodyState {
     private static ChannelState[] createChannelStates() {
         ChannelState[] s = new ChannelState[MAX_LOGICAL_CHANNELS];
         for (int i = 0; i < s.length; i++) s[i] = new ChannelState();
-        // PSMPLAY: initial percussion mask = 0x0200.
+        // Channel 9 starts in percussion mode.
         if (s.length > 9) s[9].percussion = true;
         return s;
     }

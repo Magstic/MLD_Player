@@ -34,10 +34,13 @@ public final class ResourceLongFormSemanticsAudit {
         DecodedTrack decoded = new TrackDecoder().decode(file, track);
         eq("long-form event count", 3, decoded.events.size());
         ResourceEvent f0 = requireResource(decoded.events.get(0), "7FF0");
+        eq("7FF0 command", 0xF0, f0.command);
         eq("7FF0 body length", 6, f0.bodyLength());
-        eqText("7FF0 name", "resource_3d_auxiliary", f0.name);
+        isTrue("7FF0 long-form framing", f0.longForm);
         ResourceEvent f1 = requireResource(decoded.events.get(1), "7FF1");
+        eq("7FF1 command", 0xF1, f1.command);
         eq("7FF1 body length", 3, f1.bodyLength());
+        isTrue("7FF1 long-form framing", f1.longForm);
         if (!(decoded.events.get(2) instanceof NoteEvent)) {
             fail("long-form framing alignment", "expected trailing NoteEvent");
         }

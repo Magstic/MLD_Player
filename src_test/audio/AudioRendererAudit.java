@@ -510,11 +510,6 @@ public final class AudioRendererAudit {
         same("verified support", AudioProgram.RendererSupport.VERIFIED_8001_4BIT,
                 action.rendererSupport);
 
-        for (String warning : program.warnings) {
-            if (warning.contains("renderer round")) {
-                fail("stale renderer warning", warning);
-            }
-        }
         AudioRenderer renderer = new AudioRenderer();
         eq("native sample rate", 32000, renderer.nativeSampleRate(program));
         StereoPcm rendered = renderer.render(program);

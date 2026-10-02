@@ -57,6 +57,7 @@
     </target>
 
     <target name="-test" depends="-test-compile">
+        <java classname="mld.api.InstrumentMappingAudit" classpathref="test.classpath" fork="true" failonerror="true"/>
         <java classname="mld.format.FormatDecodeFoundationAudit" classpathref="test.classpath" fork="true" failonerror="true"/>
         <java classname="mld.api.PublicApiAudit" classpathref="test.classpath" fork="true" failonerror="true"/>
         <java classname="architecture.ArchitectureClosureAudit" classpathref="test.classpath" fork="true" failonerror="true"/>

@@ -13,6 +13,7 @@ final class MidiControlEmitter {
     private final List<MidiPlan.MappedControlEvent> out;
     private final Map<Integer, Integer> lastControls = new LinkedHashMap<Integer, Integer>();
     private final Map<Integer, Integer> lastBends = new LinkedHashMap<Integer, Integer>();
+    private final Map<Integer, Integer> lastPrograms = new LinkedHashMap<Integer, Integer>();
     private int sourceOrder = -1;
     private int nextOrder;
 
@@ -25,6 +26,8 @@ final class MidiControlEmitter {
     }
 
     void emitPatch(int st, int sc, String sn, int raw, int ch, long tick, MidiPatchMapper.HostPatch p) {
+        if (same(lastPrograms.get(ch), p.program)) return;
+        lastPrograms.put(ch, p.program);
         emit(
                 st,
                 sc,
@@ -35,16 +38,15 @@ final class MidiControlEmitter {
                 ShortMessage.PROGRAM_CHANGE,
                 p.program,
                 0,
-                p.patchWord,
+                p.program,
                 p.rawPatchWord,
-                p.latePatchEntry,
-                p.source,
-                p.nativeMode,
-                p.nativeBank,
-                p.nativeProgram,
-                p.nativeKind,
-                p.nativeSub,
-                p.nativeValue,
+                "ordinary_patch",
+                p.channel.mode,
+                p.channel.bank,
+                p.channel.program,
+                p.channel.nativeKind,
+                p.channel.nativeSub,
+                p.channel.nativeValue,
                 "program_change",
                 true);
     }
@@ -91,6 +93,7 @@ final class MidiControlEmitter {
     void resetCaches() {
         lastControls.clear();
         lastBends.clear();
+        lastPrograms.clear();
     }
 
     private void emitDedup(int a, int b, String c, int raw, int ch, long t, int ctrl, int v, String map, boolean proxy) {
@@ -101,7 +104,7 @@ final class MidiControlEmitter {
     }
 
     private void emit(int a, int b, String c, int raw, int ch, long t, int status, int d1, int d2, String map, boolean proxy) {
-        emit(a, b, c, raw, ch, t, status, d1, d2, -1, -1, -1, null, -1, -1, -1, -1, -1, -1, map, proxy);
+        emit(a, b, c, raw, ch, t, status, d1, d2, -1, -1, null, -1, -1, -1, -1, -1, -1, map, proxy);
     }
 
     private void emit(
@@ -116,7 +119,6 @@ final class MidiControlEmitter {
             int data2,
             int patchWord,
             int rawPatchWord,
-            int latePatchEntry,
             String patchSource,
             int nativeMode,
             int nativeBank,
@@ -140,7 +142,6 @@ final class MidiControlEmitter {
                 data2,
                 patchWord,
                 rawPatchWord,
-                latePatchEntry,
                 patchSource,
                 nativeMode,
                 nativeBank,

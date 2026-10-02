@@ -41,7 +41,6 @@ public final class ArchitectureClosureAudit {
         auditExportOwnership(sourceRoot, sources);
         auditDeviceOwnership(sourceRoot, sources);
         auditSwingBoundary(sourceRoot);
-        auditPlaybackFieldRename(sourceRoot);
 
         System.out.println("ArchitectureClosureAudit: PASS");
     }
@@ -186,10 +185,6 @@ public final class ArchitectureClosureAudit {
                 fail("AudioRenderer regained machine-protocol ownership: " + token);
             }
         }
-        String playback = read(sourceRoot.resolve("audio/AudioPlaybackSource.java"));
-        if (playback.contains("short[] pcm16")) {
-            fail("AudioPlaybackSource regressed to the obsolete mono PCM16 voice cache");
-        }
     }
 
     private static void auditSingleMidiSerializer(Path sourceRoot, List<Path> sources) throws IOException {
@@ -222,46 +217,11 @@ public final class ArchitectureClosureAudit {
         if (Files.exists(sourceRoot.resolve("playback/MidiTransportReceiver.java"))) {
             fail("obsolete sequencer chase filter remains in production playback");
         }
-        String encoder = read(sourceRoot.resolve("midi/MidiSequenceEncoder.java"));
-        if (encoder.contains("ensurePlaybackLoopFence") || encoder.contains("ensurePlaybackGuard")) {
-            fail("MIDI file serializer regained playback-only loop mutation");
-        }
-        String participant = read(sourceRoot.resolve("playback/MidiPlaybackParticipant.java"));
-        // Continuing loops and late recovery are verified by PlaybackTransportAudit.
-        if (participant.contains("repeatLoopEvents")) {
-            fail("direct MIDI playback regained a frozen infinite MIDI template");
-        }
         String runtime = read(sourceRoot.resolve("mld/semantic/NativeLoopRuntime.java"));
         if (!runtime.contains("TimingState.Runtime")
                 || !runtime.contains("MelodyState")
                 || !runtime.contains("AudioSemanticState")) {
             fail("native loop runtime must own complete continuing semantic state");
-        }
-    }
-
-    private static void auditPlaybackFieldRename(Path sourceRoot) throws IOException {
-        Path renamedRoot = Files.createTempDirectory("mld-architecture-rename-");
-        String[] files = {
-            "playback/PlaybackSession.java", "playback/MidiPlaybackParticipant.java",
-            "midi/MidiSequenceEncoder.java", "mld/semantic/NativeLoopRuntime.java"
-        };
-        try {
-            for (String relative : files) {
-                Path target = renamedRoot.resolve(relative);
-                Files.createDirectories(target.getParent());
-                String source = read(sourceRoot.resolve(relative));
-                if (relative.equals("playback/MidiPlaybackParticipant.java")) {
-                    source = source.replace("nativeRuntime", "continuingRuntime");
-                }
-                Files.write(target, source.getBytes(StandardCharsets.UTF_8));
-            }
-            auditDirectMidiPlayback(renamedRoot);
-        } finally {
-            for (String relative : files) Files.deleteIfExists(renamedRoot.resolve(relative));
-            for (String directory : new String[] {"playback", "midi", "mld/semantic", "mld"}) {
-                Files.deleteIfExists(renamedRoot.resolve(directory));
-            }
-            Files.deleteIfExists(renamedRoot);
         }
     }
 

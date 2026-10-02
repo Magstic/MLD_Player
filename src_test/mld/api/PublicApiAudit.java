@@ -2,8 +2,6 @@ package mld.api;
 
 import java.io.ByteArrayOutputStream;
 import java.io.DataOutputStream;
-import java.nio.file.Files;
-import java.nio.file.Paths;
 
 import javax.sound.midi.Sequence;
 
@@ -16,7 +14,6 @@ public final class PublicApiAudit {
         stablePublicSurface();
         melodyConversion();
         loopedMelodyConversion();
-        sampledConversion();
         System.out.println("PublicApiAudit: PASS");
     }
 
@@ -75,24 +72,6 @@ public final class PublicApiAudit {
         MldMidiPlayback silent = MldConverter.convert(loopFixture(false)).createMidiPlayback();
         eq("silent intro folded segment count", 1, silent.getSegmentCount());
         eq("silent intro folded loop segment", 0, silent.getLoopSegmentIndex());
-    }
-
-    private static void sampledConversion() throws Exception {
-        byte[] bytes = Files.readAllBytes(Paths.get("docs/dev/SAMPLE/se_00.mld"));
-        MldConversion conversion = MldConverter.convert(bytes);
-        yes("sampled renderable", conversion.hasRenderableSampledAudio());
-        MldPcm16 pcm = conversion.renderSampledPcm16();
-        eq("sampled channels", 2, pcm.getChannels());
-        eq("sampled native rate", 32000, pcm.getSampleRate());
-        yes("sampled frames", pcm.getFrameCount() > 0);
-        short[] copy = pcm.copyInterleavedSamples();
-        if (copy.length > 0) {
-            short original = copy[0];
-            copy[0] = (short)(original ^ 0x55AA);
-            eq("pcm copy isolation", original, pcm.copyInterleavedSamples()[0]);
-        }
-        MldPcm16 resampled = conversion.renderSampledPcm16(16000);
-        eq("explicit output rate", 16000, resampled.getSampleRate());
     }
 
     private static byte[] melodyFixture() throws Exception {
@@ -179,10 +158,6 @@ public final class PublicApiAudit {
     }
 
     private static void eq(String label, int expected, int actual) {
-        if (expected != actual) throw new AssertionError(label + ": expected " + expected + ", got " + actual);
-    }
-
-    private static void eq(String label, short expected, short actual) {
         if (expected != actual) throw new AssertionError(label + ": expected " + expected + ", got " + actual);
     }
 

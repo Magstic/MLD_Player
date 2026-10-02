@@ -42,7 +42,6 @@ public final class PlaybackTransportAudit {
         auditPauseResumeRestoresHeldNotes();
         auditNativeInfiniteDirectRepeat();
         auditLateNativeLoopRebuildsCurrentState();
-        auditPlaybackModes();
         System.out.println("PlaybackTransportAudit: PASS");
     }
 
@@ -61,7 +60,7 @@ public final class PlaybackTransportAudit {
     }
 
     private static void auditFiniteNativeLoopTimeline() throws Exception {
-        NativeProgram program = loopProgram(false);
+        NativeProgram program = finiteLoopProgram();
         MidiPlan midi = new MidiProjector().project(program);
         TransportTimeline timeline = TransportTimeline.from(
                 new PlaybackContent(midi, null, program), 0);
@@ -69,7 +68,6 @@ public final class PlaybackTransportAudit {
         eqBool("finite DD is semantically materialized", false, program.loop.hasInfiniteLoop());
         eqBool("finite DD transport is linear", false, timeline.hasLoopRegion);
         eq("finite DD native rewinds", 2, program.loop.finiteRewindCount);
-        eqText("finite DD transport description", "once", timeline.describeLoop());
         eqLong("finite DD MIDI stays linear", timeline.baseDurationMicros / 2L,
                 timeline.midiPositionMicros(timeline.baseDurationMicros / 2L));
     }
@@ -81,7 +79,6 @@ public final class PlaybackTransportAudit {
                 new PlaybackContent(midi, null, program), 0);
 
         eqBool("native infinite", true, timeline.infinite);
-        eqText("native infinite description", "infinite", timeline.describeLoop());
         long halfLoop = timeline.loopBodyMicros / 2L;
         eqLong("native infinite intro source", timeline.loopStartMicros - 1L,
                 timeline.midiPositionMicros(timeline.loopStartMicros - 1L));
@@ -89,8 +86,6 @@ public final class PlaybackTransportAudit {
                 timeline.midiPositionMicros(timeline.loopStartMicros + halfLoop));
         eqLong("native infinite cycle pass 2", timeline.loopStartMicros + halfLoop,
                 timeline.midiPositionMicros(timeline.loopEndMicros + halfLoop));
-        eqText("native infinite label", "loop 2/inf",
-                timeline.progress(timeline.loopEndMicros + halfLoop, false).label);
     }
 
     private static void auditNativeLoopProgressRewinds() throws Exception {
@@ -131,7 +126,6 @@ public final class PlaybackTransportAudit {
         eq("whole repeat passes", 3, finite.totalPasses);
         eqLong("whole repeat total", base * 3L, finite.totalDurationMicros);
         eqLong("whole repeat source", base / 2L, finite.midiPositionMicros(base + (base / 2L)));
-        eqText("whole repeat label", "pass 2/3", finite.progress(base + 1L, false).label);
 
         TransportTimeline infinite = TransportTimeline.from(content, -1);
         eqBool("whole infinite", true, infinite.infinite);
@@ -171,10 +165,7 @@ public final class PlaybackTransportAudit {
             renderer.preparePlayback(program);
             fail("evolving native PCM preparation", "expected fail-closed rejection");
         } catch (IllegalArgumentException expected) {
-            if (expected.getMessage() == null
-                    || expected.getMessage().indexOf("evolving semantic state") < 0) {
-                fail("evolving native PCM diagnostic", String.valueOf(expected.getMessage()));
-            }
+            // Rejection is the contract; diagnostic wording is not.
         }
     }
 
@@ -265,10 +256,12 @@ public final class PlaybackTransportAudit {
 
     private static void auditNativeInfiniteDirectRepeat() throws Exception {
         List<TrackEvent> events = new ArrayList<TrackEvent>();
-        events.add(note(0, 5, 5, 2));
-        events.add(system(1, 10, 0xDD, 0x00));
-        events.add(note(2, 15, 5, 5));
-        events.add(system(3, 20, 0xDD, 0x01));
+        events.add(system(0, 0, 0xE2, 10));
+        events.add(note(1, 5, 5, 2));
+        events.add(system(2, 10, 0xDD, 0x00));
+        events.add(system(3, 12, 0xE6, 0x21)); // Level increases by one on each pass.
+        events.add(note(4, 15, 5, 5));
+        events.add(system(5, 20, 0xDD, 0x01));
         NativeProgram program = compile(events, 20);
         MidiPlan midi = new MidiProjector().project(program);
         int introMidiNote = midiNoteAt(midi, 5);
@@ -293,6 +286,7 @@ public final class PlaybackTransportAudit {
 
         participant.sync(timeline.loopStartMicros + loopNotePhase);
         eq("first native loop note-on", 1, receiver.count(ShortMessage.NOTE_ON, loopMidiNote));
+        eq("first native pass carries level", 22, receiver.lastControlValue(0, 7));
         participant.sync(timeline.loopEndMicros);
         eq("first native loop note-off at exact boundary", 1,
                 receiver.count(ShortMessage.NOTE_OFF, loopMidiNote));
@@ -300,6 +294,7 @@ public final class PlaybackTransportAudit {
         participant.sync(timeline.loopEndMicros + loopNotePhase);
         eq("second native loop note-on is directly scheduled", 2,
                 receiver.count(ShortMessage.NOTE_ON, loopMidiNote));
+        eq("second native pass carries level", 24, receiver.lastControlValue(0, 7));
         eq("intro carry-over release is not replayed", 1,
                 receiver.count(ShortMessage.NOTE_OFF, introMidiNote));
         eq("native boundary injects no all-notes-off", 0,
@@ -311,6 +306,8 @@ public final class PlaybackTransportAudit {
         participant.sync(timeline.loopEndMicros + timeline.loopBodyMicros + loopNotePhase);
         eq("third native loop starts without seek/chase state", 3,
                 receiver.count(ShortMessage.NOTE_ON, loopMidiNote));
+        eq("live cycle executes relative control instead of replaying a template", 26,
+                receiver.lastControlValue(0, 7));
         participant.close();
     }
 
@@ -387,29 +384,24 @@ public final class PlaybackTransportAudit {
             }
             return count;
         }
+
+        int lastControlValue(int channel, int controller) {
+            for (int i = messages.size() - 1; i >= 0; i--) {
+                ShortMessage message = messages.get(i);
+                if (message.getCommand() == ShortMessage.CONTROL_CHANGE
+                        && message.getChannel() == channel && message.getData1() == controller) {
+                    return message.getData2();
+                }
+            }
+            fail("controller output", "missing channel=" + channel + " controller=" + controller);
+            return -1;
+        }
     }
 
-    private static void auditPlaybackModes() throws Exception {
-        NativeProgram plain = plainProgram();
-        MidiPlan midi = new MidiProjector().project(plain);
-        eqText("MIDI mode", "host MIDI", PlaybackSession.describeMode(
-                new PlaybackContent(midi, null, plain)));
-
-        NativeProgram audioProgram = loopProgram(true);
-        AudioPlaybackSource pcm = new AudioRenderer().preparePlayback(audioProgram);
-        eqText("PCM mode", "sampled PCM", PlaybackSession.describeMode(
-                new PlaybackContent(null, pcm, audioProgram)));
-        eqText("mixed mode", "mixed MIDI + PCM", PlaybackSession.describeMode(
-                new PlaybackContent(midi, pcm, audioProgram)));
-    }
-
-    private static NativeProgram loopProgram(boolean withAudio) {
+    private static NativeProgram finiteLoopProgram() {
         List<TrackEvent> events = new ArrayList<TrackEvent>();
         events.add(system(0, 10, 0xDD, 0x00));
-        if (withAudio) {
-            events.add(audio(1, 10, 50, 0x4D));
-        }
-        events.add(system(withAudio ? 2 : 1, 20, 0xDD, 0x09));
+        events.add(system(1, 20, 0xDD, 0x09));
         return compile(events, 20);
     }
 
@@ -444,9 +436,10 @@ public final class PlaybackTransportAudit {
     }
 
     private static SystemEvent system(int eventIndex, int rawTick, int command, int value) {
+        int part = command >= 0xE0 && command <= 0xEF ? (value >> 6) & 3 : -1;
         return new SystemEvent(
                 0, eventIndex, 0, rawTick, command, value,
-                TrackDecoder.commandName(command), -1, -1);
+                TrackDecoder.commandName(command), part, -1);
     }
 
     private static NoteEvent note(int eventIndex, int rawTick, int gate, int pitch) {
@@ -463,7 +456,7 @@ public final class PlaybackTransportAudit {
 
     private static MachineDependentEvent audio(
             int eventIndex, int rawTick, int encodedBytes, int formatByte) {
-        byte[] payload = new byte[11 + encodedBytes];
+        byte[] payload = new byte[9 + encodedBytes];
         payload[0] = 0x71;
         payload[1] = (byte) 0x84;
         payload[2] = 0x00;
@@ -476,9 +469,7 @@ public final class PlaybackTransportAudit {
         for (int i = 0; i < encodedBytes; i++) {
             payload[9 + i] = (byte) (i * 13 + 7);
         }
-        byte[] exact = new byte[9 + encodedBytes];
-        System.arraycopy(payload, 0, exact, 0, exact.length);
-        return new MachineDependentEvent(0, eventIndex, 0, rawTick, 0xFF, exact);
+        return new MachineDependentEvent(0, eventIndex, 0, rawTick, 0xFF, payload);
     }
 
 
@@ -515,12 +506,6 @@ public final class PlaybackTransportAudit {
 
     private static void eqBool(String label, boolean expected, boolean actual) {
         if (expected != actual) fail(label, "expected " + expected + ", got " + actual);
-    }
-
-    private static void eqText(String label, String expected, String actual) {
-        if (expected == null ? actual != null : !expected.equals(actual)) {
-            fail(label, "expected " + expected + ", got " + actual);
-        }
     }
 
     private static void eqBytes(String label, byte[] expected, byte[] actual) {

@@ -13,7 +13,7 @@ import java.util.List;
  */
 final class MidiLaneMapper {
     private static final int MIDI_CHANNEL_COUNT = 16;
-    private static final int PSM_GM_DRUM_CHANNEL = 9;
+    private static final int GM_DRUM_CHANNEL = 9;
 
     private MidiLaneMapper() {
     }
@@ -100,18 +100,31 @@ final class MidiLaneMapper {
 
     private static int[] buildHostOutputChannelMap(LaneTracker outputLaneTracker) {
         int[] outputChannelMap = createIdentityMap(MIDI_CHANNEL_COUNT);
-        // The supported PSM profile reserves channel 9 and compacts ordinary lanes.
+        // Reserve channel 9 for percussion and assign melodic channels sequentially.
         int nextMelodicChannel = 0;
+        int usedOutputs = 0;
         for (int logicalChannel = 0; logicalChannel < MIDI_CHANNEL_COUNT; logicalChannel++) {
             if (!outputLaneTracker.hasNoteUse(logicalChannel)) {
                 continue;
             }
             if (outputLaneTracker.isAuthoritativeSpecial(logicalChannel)) {
-                outputChannelMap[logicalChannel] = PSM_GM_DRUM_CHANNEL;
-                continue;
+                outputChannelMap[logicalChannel] = GM_DRUM_CHANNEL;
+            } else {
+                outputChannelMap[logicalChannel] = nextMelodicChannel;
+                nextMelodicChannel = nextSequentialOutputLane(nextMelodicChannel);
             }
-            outputChannelMap[logicalChannel] = nextMelodicChannel;
-            nextMelodicChannel = nextSequentialOutputLane(nextMelodicChannel);
+            usedOutputs |= 1 << outputChannelMap[logicalChannel];
+        }
+        // Assign control-only lanes free outputs to avoid altering sounding channels.
+        for (int logicalChannel = 0; logicalChannel < MIDI_CHANNEL_COUNT; logicalChannel++) {
+            if (outputLaneTracker.hasNoteUse(logicalChannel)) continue;
+            int output = logicalChannel;
+            if ((usedOutputs & (1 << output)) != 0) {
+                output = 0;
+                while ((usedOutputs & (1 << output)) != 0) output++;
+            }
+            outputChannelMap[logicalChannel] = output;
+            usedOutputs |= 1 << output;
         }
         return outputChannelMap;
     }
@@ -164,7 +177,7 @@ final class MidiLaneMapper {
         if (current >= MIDI_CHANNEL_COUNT - 1) {
             return MIDI_CHANNEL_COUNT - 1;
         }
-        if (current == (PSM_GM_DRUM_CHANNEL - 1)) {
+        if (current == (GM_DRUM_CHANNEL - 1)) {
             return current + 2;
         }
         return current + 1;

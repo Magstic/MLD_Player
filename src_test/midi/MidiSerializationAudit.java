@@ -10,6 +10,8 @@ import javax.sound.midi.Sequence;
 import javax.sound.midi.ShortMessage;
 import javax.sound.midi.Track;
 
+import mld.semantic.MelodyProgram;
+
 /** Regression audit for the single MIDI serializer and its plan transformations. */
 public final class MidiSerializationAudit {
     private MidiSerializationAudit() {
@@ -20,6 +22,10 @@ public final class MidiSerializationAudit {
         auditInfiniteLoopEncodingBoundary();
         auditSegmentPrimingAndClipping();
         auditControlProvenanceThroughTransforms();
+        auditPatchEvidence(false);
+        auditPatchEvidence(true);
+        auditControlOnlyLaneIsolation(false);
+        auditControlOnlyLaneIsolation(true);
         System.out.println("MidiSerializationAudit: PASS");
     }
 
@@ -97,7 +103,7 @@ public final class MidiSerializationAudit {
     private static void auditControlProvenanceThroughTransforms() {
         MidiPlan.MappedControlEvent source = new MidiPlan.MappedControlEvent(
                 2, 0xE2, "level", 12, 4, 4, 5, 10L, ShortMessage.CONTROL_CHANGE, 7, 100,
-                0x123, 0x456, 17, "patch", 1, 2, 3, 4, 5, 6, "cc7_volume", true, 13, 14);
+                0x123, 0x456, "patch", 1, 2, 3, 4, 5, 6, "cc7_volume", true, 13, 14);
         List<MidiPlan.MappedControlEvent> controls = new ArrayList<MidiPlan.MappedControlEvent>();
         controls.add(new MidiPlan.MappedControlEvent(source, 4, 5, 0L, 20, "initial_level", 0));
         controls.add(source);
@@ -125,7 +131,6 @@ public final class MidiSerializationAudit {
             eq("controller", source.data1, transformed.data1);
             eq("patch word", source.patchWord, transformed.patchWord);
             eq("raw patch word", source.rawPatchWord, transformed.rawPatchWord);
-            eq("late patch entry", source.latePatchEntry, transformed.latePatchEntry);
             eq("native mode", source.nativeMode, transformed.nativeMode);
             eq("native bank", source.nativeBank, transformed.nativeBank);
             eq("native program", source.nativeProgram, transformed.nativeProgram);
@@ -133,8 +138,7 @@ public final class MidiSerializationAudit {
             eq("native sub", source.nativeSub, transformed.nativeSub);
             eq("native value", source.nativeValue, transformed.nativeValue);
             eq("source order", source.sourceOrder, transformed.sourceOrder);
-            if (!"level_live_mix_chase".equals(transformed.sourceName)
-                    || !source.patchSource.equals(transformed.patchSource)
+            if (!source.patchSource.equals(transformed.patchSource)
                     || !source.hostMapping.equals(transformed.hostMapping)
                     || source.hostMappingProxy != transformed.hostMappingProxy) {
                 fail("control provenance", "metadata lost during chase/remap/slice");
@@ -142,6 +146,58 @@ public final class MidiSerializationAudit {
         }
         eq("source channel unchanged", 4, source.midiChannel);
         eqLong("source tick unchanged", 10L, source.midiTick);
+    }
+
+    private static void auditPatchEvidence(boolean percussionLane) {
+        MelodyProgram.ChannelSnapshot channel = new MelodyProgram.ChannelSnapshot(
+                0, false, 0x36, 5, 63, 32, 32, 32, 2, 0, false, 17, 0, 5);
+        List<MidiPlan.MappedControlEvent> controls = new ArrayList<MidiPlan.MappedControlEvent>();
+        MidiControlEmitter emitter = new MidiControlEmitter(controls);
+        emitter.emitPatch(0, 0xE0, "program", 0, 4, 0L,
+                MidiPatchMapper.translate(channel, percussionLane));
+        eq("patch evidence event count", 1, controls.size());
+        MidiPlan.MappedControlEvent patch = controls.get(0);
+        eq("patch MIDI program", percussionLane ? 0 : 5, patch.data1);
+        eq("patch word is MIDI program", patch.data1, patch.patchWord);
+        eq("patch internal evidence word", 0x1B05, patch.rawPatchWord);
+        eq("patch native mode", channel.mode, patch.nativeMode);
+        eq("patch native bank", channel.bank, patch.nativeBank);
+        eq("patch native program", channel.program, patch.nativeProgram);
+        eq("patch native kind", channel.nativeKind, patch.nativeKind);
+        eq("patch native sub", channel.nativeSub, patch.nativeSub);
+        eq("patch native value", channel.nativeValue, patch.nativeValue);
+    }
+
+    private static void auditControlOnlyLaneIsolation(boolean percussion) throws Exception {
+        int soundingLane = percussion ? 6 : 4;
+        int controlOnlyLane = percussion ? 9 : 0;
+        MidiLaneMapper.LaneTracker lanes = new MidiLaneMapper.LaneTracker();
+        lanes.observeNote(soundingLane, percussion);
+        lanes.observeActive(controlOnlyLane);
+        List<MidiPlan.CompiledNote> notes = Collections.singletonList(new MidiPlan.CompiledNote(
+                0, 0, soundingLane, soundingLane, soundingLane + 1,
+                60, 100, 0, 20, 0L, 20L));
+        List<MidiPlan.MappedControlEvent> controls = new ArrayList<MidiPlan.MappedControlEvent>();
+        controls.add(laneControl(soundingLane, ShortMessage.PROGRAM_CHANGE, percussion ? 0 : 74, 0, 0L, 0));
+        // Patch, pitch and level changes on a control-only lane must stay isolated.
+        controls.add(laneControl(controlOnlyLane, ShortMessage.PROGRAM_CHANGE, 127, 0, 10L, 1));
+        controls.add(laneControl(controlOnlyLane, ShortMessage.PITCH_BEND, 127, 127, 10L, 2));
+        controls.add(laneControl(controlOnlyLane, ShortMessage.CONTROL_CHANGE, 7, 0, 10L, 3));
+        List<MidiPlan.TempoPoint> tempos = tempos(tempo(0L, 500000));
+        MidiLaneMapper.Result mapped = MidiLaneMapper.finalizeOutput(
+                1, new int[] {soundingLane, 1, 2, 3}, lanes, notes, controls, tempos,
+                noLoop(), 20L, new ArrayList<String>());
+        int output = mapped.notes.get(0).midiChannel;
+        eq("sounding lane keeps compacted output", percussion ? 9 : 0, output);
+        Sequence sequence = new MidiSequenceEncoder().encode(
+                plan(noLoop(), tempos, mapped.notes, mapped.mappedControls, 20L)).sequence;
+        eq("control-only lane cannot alter sounding output", 0,
+                shortMessagesAt(sequence.getTracks()[output + 1], 10L).size());
+        for (MidiPlan.MappedControlEvent event : mapped.mappedControls) {
+            if (event.logicalChannel == controlOnlyLane && event.midiChannel == output) {
+                fail("control-only lane isolation", "unused lane overwrote the sounding channel");
+            }
+        }
     }
 
     private static MidiPlan plan(
@@ -201,19 +257,23 @@ public final class MidiSerializationAudit {
             int data2,
             long midiTick,
             int order) {
+        return laneControl(0, status, data1, data2, midiTick, order);
+    }
+
+    private static MidiPlan.MappedControlEvent laneControl(
+            int logicalChannel, int status, int data1, int data2, long midiTick, int order) {
         return new MidiPlan.MappedControlEvent(
                 0,
                 0,
                 "audit",
                 0,
-                0,
-                0,
-                1,
+                logicalChannel,
+                logicalChannel,
+                logicalChannel + 1,
                 midiTick,
                 status,
                 data1,
                 data2,
-                -1,
                 -1,
                 -1,
                 null,

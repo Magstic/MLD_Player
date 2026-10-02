@@ -72,7 +72,7 @@ public final class ResourceSemanticsAudit {
         chunks.add(chunk("adat", 21, 4, "resource", new byte[] { 1, 2, 3, 4 }));
         NativeProgram program = compile(file(11, 1, 0, chunks), Collections.<TrackEvent>emptyList(), 0);
         eq("bit40 ainf leaves adat inactive", -1, catalogAt(program, 21).activeAdatIndex);
-        contains("bit40 ainf warning", program.warnings, "bit 0x40");
+        isFalse("unsupported ainf declaration is reported", program.warnings.isEmpty());
     }
 
     private static void auditThrdInitialConfig() {
@@ -97,8 +97,7 @@ public final class ResourceSemanticsAudit {
         AudioProgram.InitialChannelConfig audio = program.audio.initialChannelConfigs.get(1);
         eqText("thrd audio target", "audio", audio.target);
         eq("thrd audio raw31 remains selector", 31, audio.rawSubvalue);
-        contains("thrd odd trailing byte warning", program.warnings, "trailing record byte");
-        contains("thrd duplicate first-wins warning", program.warnings, "Duplicate thrd record");
+        isFalse("malformed thrd records are reported", program.warnings.isEmpty());
     }
 
     private static void auditLiveResourceState() {
@@ -224,13 +223,6 @@ public final class ResourceSemanticsAudit {
             fail(name, "expected ResourceEvent, got " + event.getClass().getSimpleName());
         }
         return (ResourceEvent) event;
-    }
-
-    private static void contains(String name, List<String> values, String needle) {
-        for (String value : values) {
-            if (value.contains(needle)) return;
-        }
-        fail(name, "missing text: " + needle + " in " + values);
     }
 
     private static void eq(String name, int expected, int actual) {

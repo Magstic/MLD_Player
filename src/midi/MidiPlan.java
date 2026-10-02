@@ -191,7 +191,6 @@ public final class MidiPlan {
         public final int data2;
         public final int patchWord;
         public final int rawPatchWord;
-        public final int latePatchEntry;
         public final String patchSource;
         public final int nativeMode;
         public final int nativeBank;
@@ -217,7 +216,7 @@ public final class MidiPlan {
                     source.sourceTrack, source.sourceCommand, sourceName, source.rawTick,
                     midiChannel, source.logicalChannel, midiTrackIndex, midiTick,
                     source.status, source.data1, data2, source.patchWord, source.rawPatchWord,
-                    source.latePatchEntry, source.patchSource, source.nativeMode, source.nativeBank,
+                    source.patchSource, source.nativeMode, source.nativeBank,
                     source.nativeProgram, source.nativeKind, source.nativeSub, source.nativeValue,
                     source.hostMapping, source.hostMappingProxy, source.sourceOrder, order);
         }
@@ -236,7 +235,6 @@ public final class MidiPlan {
                 int data2,
                 int patchWord,
                 int rawPatchWord,
-                int latePatchEntry,
                 String patchSource,
                 int nativeMode,
                 int nativeBank,
@@ -261,7 +259,6 @@ public final class MidiPlan {
             this.data2 = data2;
             this.patchWord = patchWord;
             this.rawPatchWord = rawPatchWord;
-            this.latePatchEntry = latePatchEntry;
             this.patchSource = patchSource;
             this.nativeMode = nativeMode;
             this.nativeBank = nativeBank;

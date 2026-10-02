@@ -1,7 +1,15 @@
 package playback;
 
+import java.io.BufferedReader;
+import java.io.InputStreamReader;
+import java.io.PrintWriter;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 
 import javax.sound.midi.MidiMessage;
 import javax.sound.midi.Receiver;
@@ -14,9 +22,14 @@ public final class PlaybackInfrastructureAudit {
     }
 
     public static void main(String[] args) throws Exception {
+        if (args.length >= 2 && "--fake-fluid-synth".equals(args[0])) {
+            runFakeFluidSynth(args);
+            return;
+        }
         auditMasterVolumeScaling();
         auditPcmMasterVolumeScaling();
         auditFluidSynthProtocol();
+        auditFluidSynthProcessBuffers();
         System.out.println("PlaybackInfrastructureAudit: PASS");
     }
 
@@ -121,6 +134,73 @@ public final class PlaybackInfrastructureAudit {
         ShortMessage message = new ShortMessage();
         message.setMessage(command, channel, data1, data2);
         return message;
+    }
+
+    private static void auditFluidSynthProcessBuffers() throws Exception {
+        Path directory = Files.createTempDirectory("mld-fluid-buffers-");
+        boolean windows = System.getProperty("os.name", "").toLowerCase(Locale.ROOT).contains("win");
+        Path launcher = directory.resolve(windows ? "synth.cmd" : "synth.sh");
+        Path record = directory.resolve("arguments.txt");
+        Path soundFont = directory.resolve("Sound Font.sf2");
+        String java = Paths.get(System.getProperty("java.home"), "bin", windows ? "java.exe" : "java").toString();
+        String classpath = System.getProperty("java.class.path");
+        String script = windows
+                ? "@echo off\r\n\"" + java + "\" -cp \"" + classpath + "\" playback.PlaybackInfrastructureAudit --fake-fluid-synth \"" + record + "\" %*\r\n"
+                : "#!/bin/sh\nexec " + shellQuote(java) + " -cp " + shellQuote(classpath)
+                        + " playback.PlaybackInfrastructureAudit --fake-fluid-synth " + shellQuote(record.toString()) + " \"$@\"\n";
+        try {
+            Files.write(launcher, script.getBytes(StandardCharsets.UTF_8));
+            if (!windows && !launcher.toFile().setExecutable(true)) {
+                throw new AssertionError("Cannot execute fake FluidSynth launcher");
+            }
+            Files.write(soundFont, new byte[0]);
+            Receiver receiver = FluidSynthBackend.openReceiver(new MidiOutput(
+                    "test", MidiOutput.Backend.FLUIDSYNTH, null, launcher.toString(), soundFont));
+            try {
+                receiver.send(shortMessage(ShortMessage.NOTE_ON, 0, 60, 90), -1L);
+            } finally {
+                receiver.close();
+            }
+            List<String> lines = Files.readAllLines(record, StandardCharsets.UTF_8);
+            int periodSize = optionValue(lines, "-z", 64);
+            int periods = optionValue(lines, "-c", 16);
+            long periodMicros = periodSize * 1000000L / 44100L;
+            long bufferMicros = periodMicros * periods;
+            if (periodMicros < 10000L || bufferMicros < 40000L || bufferMicros > 200000L) {
+                throw new AssertionError("FluidSynth output lacks scheduling margin: period="
+                        + periodMicros + "us, buffer=" + bufferMicros + "us");
+            }
+            if (!lines.contains(soundFont.toString()) || !lines.contains("noteon 0 60 90")
+                    || !lines.contains("quit")) {
+                throw new AssertionError("FluidSynth launch/send/close lifecycle lost arguments or commands");
+            }
+        } finally {
+            Files.deleteIfExists(record);
+            Files.deleteIfExists(launcher);
+            Files.deleteIfExists(soundFont);
+            Files.deleteIfExists(directory);
+        }
+    }
+
+    private static int optionValue(List<String> arguments, String option, int defaultValue) {
+        int index = arguments.indexOf(option);
+        return index < 0 ? defaultValue : Integer.parseInt(arguments.get(index + 1));
+    }
+
+    private static String shellQuote(String value) {
+        return "'" + value.replace("'", "'\"'\"'") + "'";
+    }
+
+    private static void runFakeFluidSynth(String[] args) throws Exception {
+        try (PrintWriter record = new PrintWriter(Files.newBufferedWriter(Paths.get(args[1]), StandardCharsets.UTF_8));
+                BufferedReader input = new BufferedReader(new InputStreamReader(System.in, StandardCharsets.UTF_8))) {
+            for (int index = 2; index < args.length; index++) record.println(args[index]);
+            String line;
+            while ((line = input.readLine()) != null) {
+                record.println(line);
+                if ("quit".equals(line)) break;
+            }
+        }
     }
 
     private static void eq(String label, int expected, int actual) {

@@ -1,6 +1,7 @@
 package midi;
 
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.Comparator;
 import java.util.List;
@@ -23,7 +24,7 @@ final class MidiProjectionState {
     private final List<MidiPlan.CompiledNote> notes = new ArrayList<MidiPlan.CompiledNote>();
     private final List<MidiPlan.MappedControlEvent> controls = new ArrayList<MidiPlan.MappedControlEvent>();
     private final MidiLaneMapper.LaneTracker laneTracker = new MidiLaneMapper.LaneTracker();
-    private ProjectionChannel[] channels = createChannels();
+    private final boolean[] pitchRangeDirty = new boolean[64];
     private final MidiControlEmitter emitter = new MidiControlEmitter(controls);
 
     MidiProjectionState(MidiTimingMapper t, List<String> w) {
@@ -52,7 +53,11 @@ final class MidiProjectionState {
 
     Result project(NativeProgram p) {
         List<ActionRef> a = new ArrayList<ActionRef>(p.melody.notes.size() + p.melody.controls.size());
-        for (MelodyProgram.NativeNote n : p.melody.notes) a.add(ActionRef.note(n));
+        for (MelodyProgram.NativeNote n : p.melody.notes) {
+            a.add(ActionRef.note(n));
+            // Classify percussion channels for the whole song before emitting patches.
+            laneTracker.observeNote(n.logicalChannel, n.channel.percussion);
+        }
         for (MelodyProgram.NativeControl c : p.melody.controls) a.add(ActionRef.control(c));
         Collections.sort(a, ACTION_ORDER);
         long total = timing.rawToMidiTick(p.linearEndRawTick);
@@ -85,10 +90,7 @@ final class MidiProjectionState {
             return -1;
         }
         boolean percussion = n.channel.percussion;
-        laneTracker.observeNote(l, percussion);
-        ProjectionChannel c = channels[l];
-        c.copyNative(n.channel);
-        emitPatchIfNeeded(c, l, n.sourceTrack, -1, "note_patch_sync", n.rawStartTick, timing.rawToMidiTick(n.rawStartTick));
+        emitPatchIfNeeded(n.channel, l, n.sourceTrack, -1, "note_patch_sync", n.rawStartTick, timing.rawToMidiTick(n.rawStartTick));
         int base = percussion ? 35 : 45;
         int midiNote = clamp(0, 127, base + n.pitchOffset);
         long start = timing.rawToMidiTick(n.rawStartTick);
@@ -115,21 +117,15 @@ final class MidiProjectionState {
 
         case 0xBF:
             emitter.emitAllSoundOff(c.sourceTrack, c.sourceCommand, c.sourceName, c.rawTick, t);
-            resetChannels();
+            Arrays.fill(pitchRangeDirty, false);
             emitter.resetCaches();
             emitInitialMidiDefaults(t);
             return;
 
         case 0xBA:
-            mode(c, t);
-            return;
-
         case 0xE0:
-            program(c, t);
-            return;
-
         case 0xE1:
-            bank(c, t);
+            patch(c, t);
             return;
 
         case 0xE2:
@@ -164,60 +160,37 @@ final class MidiProjectionState {
         }
     }
 
-    private void mode(MelodyProgram.NativeControl c, long t) {
-        int l = c.logicalChannel;
-        if (!isProjectionChannel(l) || c.channel == null) return;
-        ProjectionChannel ch = channels[l];
-        ch.copyNative(c.channel);
-        MidiPatchMapper.observeMode(ch.patch, c.channel);
-        laneTracker.observeActive(l);
-        if (c.channel.mode == 1) emitPatchIfNeeded(ch, l, c.sourceTrack, c.sourceCommand, c.sourceName, c.rawTick, t);
-    }
-
-    private void program(MelodyProgram.NativeControl c, long t) {
+    private void patch(MelodyProgram.NativeControl c, long t) {
         int l = prepare(c);
-        if (l < 0) return;
-        ProjectionChannel ch = channels[l];
-        MidiPatchMapper.observeProgram(ch.patch, c.channel);
-        emitPatchIfNeeded(ch, l, c.sourceTrack, c.sourceCommand, c.sourceName, c.rawTick, t);
-    }
-
-    private void bank(MelodyProgram.NativeControl c, long t) {
-        int l = prepare(c);
-        if (l < 0) return;
-        ProjectionChannel ch = channels[l];
-        MidiPatchMapper.observeBank(ch.patch, c.channel);
-        if (c.channel.mode != 1) return;
-        if (!ch.patch.hasProgramEvent && ch.patch.latePatchOverrideEntry == 0) return;
-        emitPatchIfNeeded(ch, l, c.sourceTrack, c.sourceCommand, c.sourceName, c.rawTick, t);
+        if (l < 0 || (c.sourceCommand == 0xBA && c.channel.mode != 1)) return;
+        emitPatchIfNeeded(c.channel, l, c.sourceTrack, c.sourceCommand, c.sourceName, c.rawTick, t);
     }
 
     private void volume(MelodyProgram.NativeControl c, long t) {
         int l = prepare(c);
         if (l < 0 || !isHostChannel(l)) return;
-        emitter.emitVolume(c.sourceTrack, c.sourceCommand, c.sourceName, c.rawTick, l, t, computePsmVolumeSync(c.channel));
+        emitter.emitVolume(c.sourceTrack, c.sourceCommand, c.sourceName, c.rawTick, l, t, computeMidiVolume(c.channel));
     }
 
     private void pan(MelodyProgram.NativeControl c, long t) {
         int l = prepare(c);
         if (l < 0 || !isHostChannel(l)) return;
-        emitter.emitPan(c.sourceTrack, c.sourceCommand, c.sourceName, c.rawTick, l, t, computePsmPanSync(c.channel));
+        emitter.emitPan(c.sourceTrack, c.sourceCommand, c.sourceName, c.rawTick, l, t, computeMidiPan(c.channel));
     }
 
     private void pitchApply(MelodyProgram.NativeControl c, long t) {
         int l = prepare(c);
         if (l < 0 || !isHostChannel(l)) return;
-        ProjectionChannel ch = channels[l];
-        if (ch.pitchRangeDirty) {
-            emitter.emitPitchRange(c.sourceTrack, c.sourceCommand, c.sourceName, c.rawTick, l, t, ch.nativeChannel.pitchRange);
-            ch.pitchRangeDirty = false;
+        if (pitchRangeDirty[l]) {
+            emitter.emitPitchRange(c.sourceTrack, c.sourceCommand, c.sourceName, c.rawTick, l, t, c.channel.pitchRange);
+            pitchRangeDirty[l] = false;
         }
         emitter.emitPitchBend(c.sourceTrack, c.sourceCommand, c.sourceName, c.rawTick, l, t, computePitchBend(c.channel));
     }
 
     private void pitchRangeCache(MelodyProgram.NativeControl c) {
         int l = prepare(c);
-        if (l >= 0) channels[l].pitchRangeDirty = true;
+        if (l >= 0) pitchRangeDirty[l] = true;
     }
 
     private void modulation(MelodyProgram.NativeControl c, long t) {
@@ -228,40 +201,28 @@ final class MidiProjectionState {
     private int prepare(MelodyProgram.NativeControl c) {
         int l = c.logicalChannel;
         if (!isProjectionChannel(l) || c.channel == null) return -1;
-        channels[l].copyNative(c.channel);
         laneTracker.observeActive(l);
         if (!isHostChannel(l)) warnHostChannel(l, "control " + c.sourceName);
         return l;
     }
 
-    private void emitPatchIfNeeded(ProjectionChannel ch, int l, int st, int sc, String sn, int raw, long t) {
-        if (!isHostChannel(l) || ch.nativeChannel == null) return;
-        MidiPatchMapper.HostPatch p = MidiPatchMapper.translate(ch.patch, ch.nativeChannel);
-        if (p.suppressed) return;
-        if (!ch.patch.patchDirty && ch.patch.lastPatch != null) return;
-        if (ch.patch.lastPatch != null && ch.patch.lastPatch.sameAs(p)) {
-            ch.patch.patchDirty = false;
-            return;
-        }
-        emitter.emitPatch(st, sc, sn, raw, l, t, p);
-        ch.patch.patchDirty = false;
-        ch.patch.lastPatch = p;
+    private void emitPatchIfNeeded(MelodyProgram.ChannelSnapshot channel,
+            int l, int st, int sc, String sn, int raw, long t) {
+        if (!isHostChannel(l) || channel == null) return;
+        if (channel.mode != 0 && channel.mode != 1) return;
+        emitter.emitPatch(st, sc, sn, raw, l, t,
+                MidiPatchMapper.translate(channel, laneTracker.isAuthoritativeSpecial(l)));
     }
 
     private void emitInitialMidiDefaults(long t) {
+        MelodyProgram.ChannelSnapshot d = defaultSnapshot();
         for (int ch = 0; ch < 16; ch++) {
-            MelodyProgram.ChannelSnapshot d = defaultSnapshot();
-            channels[ch].copyNative(d);
-            emitter.emitVolume(-1, -1, "default_level", 0, ch, t, computePsmVolumeSync(d));
-            emitter.emitPan(-1, -1, "default_pan", 0, ch, t, computePsmPanSync(d));
+            emitter.emitVolume(-1, -1, "default_level", 0, ch, t, computeMidiVolume(d));
+            emitter.emitPan(-1, -1, "default_pan", 0, ch, t, computeMidiPan(d));
             emitter.emitPitchRange(-1, -1, "default_pitch_range", 0, ch, t, d.pitchRange);
             emitter.emitPitchBend(-1, -1, "default_pitch", 0, ch, t, computePitchBend(d));
             emitter.emitModulation(-1, -1, "default_modulation", 0, ch, t, d.modulation * 2);
         }
-    }
-
-    private void resetChannels() {
-        channels = createChannels();
     }
 
     private void warnHostChannel(int l, String context) {
@@ -272,11 +233,11 @@ final class MidiProjectionState {
         if (!warnings.contains(w)) warnings.add(w);
     }
 
-    private static int computePsmVolumeSync(MelodyProgram.ChannelSnapshot c) {
+    private static int computeMidiVolume(MelodyProgram.ChannelSnapshot c) {
         return clamp(0, 127, c.level * 2);
     }
 
-    private static int computePsmPanSync(MelodyProgram.ChannelSnapshot c) {
+    private static int computeMidiPan(MelodyProgram.ChannelSnapshot c) {
         return clamp(0, 127, c.pan * 2);
     }
 
@@ -298,12 +259,6 @@ final class MidiProjectionState {
 
     private static int clamp(int a, int b, int v) {
         return Math.max(a, Math.min(b, v));
-    }
-
-    private static ProjectionChannel[] createChannels() {
-        ProjectionChannel[] r = new ProjectionChannel[64];
-        for (int i = 0; i < r.length; i++) r[i] = new ProjectionChannel();
-        return r;
     }
 
     private static MelodyProgram.ChannelSnapshot defaultSnapshot() {
@@ -335,19 +290,6 @@ final class MidiProjectionState {
             controls = b;
             laneTracker = c;
             totalMidiTicks = d;
-        }
-    }
-
-    private static final class ProjectionChannel {
-        final MidiPatchMapper.ChannelState patch = new MidiPatchMapper.ChannelState();
-        MelodyProgram.ChannelSnapshot nativeChannel = defaultSnapshot();
-        boolean pitchRangeDirty;
-
-        void copyNative(MelodyProgram.ChannelSnapshot c) {
-            if (c != null) {
-                nativeChannel = c;
-                patch.copyNative(c);
-            }
         }
     }
 
