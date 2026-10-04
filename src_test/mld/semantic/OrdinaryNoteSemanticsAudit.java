@@ -126,8 +126,9 @@ public final class OrdinaryNoteSemanticsAudit {
         eq("zero gate sounding note count", 1, result.program.melody.notes.size());
         MelodyProgram.NativeNote note = result.program.melody.notes.get(0);
         eq("zero gate raw end remains exact", 0, note.rawEndTick);
-        eqLong("zero gate MIDI representation gets minimum duration", 1L, result.midi.notes.get(0).midiEndTick);
-        eqLong("zero gate MIDI duration contributes to timeline end", 1L, result.midi.totalMidiTicks);
+        eqLong("zero gate MIDI end remains exact", 0L, result.midi.notes.get(0).midiEndTick);
+        eqLong("zero gate adds no elapsed MIDI duration", 0L, result.midi.totalMidiTicks);
+        if (note.endOrder <= note.order) fail("zero gate order", "expiry must follow its note-on");
     }
 
     private static void auditPatchModeHelperBoundary() {

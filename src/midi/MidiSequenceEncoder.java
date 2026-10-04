@@ -83,26 +83,26 @@ public final class MidiSequenceEncoder {
                     control.status,
                     control.data1,
                     control.data2,
-                    control.order));
+                    control.executionOrder()));
         }
 
         for (MidiPlan.CompiledNote note : plan.notes) {
-            if (note.midiStartTick > contentEndTick) {
+            if (note.midiStartTick > contentEndTick
+                    || (plan.loopInfo.hasLoop && note.midiStartTick == contentEndTick)) {
                 continue;
             }
             long noteOffTick = Math.min(note.midiEndTick, contentEndTick);
-            int noteOrder = (note.sourceTrack * 16) + note.sourceVoice;
             events.add(TrackMessageEvent.noteOff(
                     note.midiChannel,
                     noteOffTick,
                     note.midiNote,
-                    noteOrder));
+                    note.endOrder));
             events.add(TrackMessageEvent.noteOn(
                     note.midiChannel,
                     note.midiStartTick,
                     note.midiNote,
                     note.velocity,
-                    noteOrder));
+                    note.startOrder));
         }
 
         Collections.sort(events, TRACK_MESSAGE_COMPARATOR);
@@ -161,13 +161,9 @@ public final class MidiSequenceEncoder {
                     if (byChannel != 0) return byChannel;
                     int byTick = Long.compare(left.tick, right.tick);
                     if (byTick != 0) return byTick;
-                    int byPhase = Integer.compare(left.phase, right.phase);
-                    if (byPhase != 0) return byPhase;
                     int byOrder = Integer.compare(left.order, right.order);
                     if (byOrder != 0) return byOrder;
-                    int byData1 = Integer.compare(left.data1, right.data1);
-                    if (byData1 != 0) return byData1;
-                    return Integer.compare(left.data2, right.data2);
+                    return Integer.compare(left.phase, right.phase);
                 }
             };
 

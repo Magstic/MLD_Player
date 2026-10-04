@@ -127,7 +127,8 @@ public final class NativeLoopRuntime {
     private void process(TrackEvent event) {
         melody.flushExpired(event.rawTick);
         if (event instanceof NoteEvent) {
-            melody.processNote((NoteEvent) event, order++);
+            melody.processNote((NoteEvent) event);
+            order++;
         } else if (event instanceof ResourceEvent) {
             audio.handleResource((ResourceEvent) event, order, melody.voiceMap(), timing);
             order++;
@@ -135,7 +136,7 @@ public final class NativeLoopRuntime {
             audio.handleMachine((MachineDependentEvent) event, order++);
         } else if (event instanceof SystemEvent) {
             SystemEvent system = (SystemEvent) event;
-            melody.processSystem(system, order);
+            melody.processSystem(system);
             audio.handleSystem(system, order++);
             TimingState.apply(timing, system);
         } else {

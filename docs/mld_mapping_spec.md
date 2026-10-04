@@ -119,8 +119,8 @@ Gate:
 - refresh retains original sounding state and velocity
 - expiry at tick `T` runs before a track event at `T`
 - native `gate=0`: same-tick expiry
-- sounding MIDI serialization: `midiEnd=max(midiStart+1,rawToMidi(rawEnd))`
-- the MIDI `+1` rule stays outside native gate state
+- sounding MIDI serialization: `midiEnd=rawToMidi(rawEnd)`
+- zero-duration notes retain same-tick note-on and note-off in semantic order
 
 Note-on suppression state:
 
@@ -327,16 +327,19 @@ The built sequence contains:
 - `1` conductor track
 - `16` channel tracks
 
-Same-channel ordering at the same MIDI tick is:
+Same-channel events at the same MIDI tick follow native semantic execution order:
 
-1. note-off
-2. control / program events
-3. note-on
+- notes and controls share a monotonic semantic action order across resets and continuing cycles
+- each note retains its start and end action orders
+- scheduled gate expiry precedes the track event that reaches its end tick
+- patch synchronization precedes the note-on it belongs to
+- stop/reset releases earlier notes at its source position; later same-tick notes remain later
+- messages belonging to one semantic action use note-off, control/program, then note-on order
+- controls from one action keep their collected emission order
 
-Within the same phase and tick:
-
-- controls keep their collected source order
-- note ordering is stable by `(sourceTrack, sourceVoice)`
+An encoded loop excludes notes starting at its end boundary. Notes already started
+are clipped to that boundary with their note-on/off pairing preserved. Segment
+priming restores controls before carried notes and boundary events.
 
 ## Resource-State Mapping
 

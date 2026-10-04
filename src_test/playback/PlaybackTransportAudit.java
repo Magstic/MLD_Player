@@ -40,6 +40,8 @@ public final class PlaybackTransportAudit {
         auditPcmOnlyWholeRepeatIncludesTail();
         auditMixedWholeRepeatBoundaryRestart();
         auditPauseResumeRestoresHeldNotes();
+        auditSameTickStopAndReset();
+        auditSessionResetTiming();
         auditNativeInfiniteDirectRepeat();
         auditLateNativeLoopRebuildsCurrentState();
         System.out.println("PlaybackTransportAudit: PASS");
@@ -254,6 +256,66 @@ public final class PlaybackTransportAudit {
         participant.close();
     }
 
+    private static void auditSameTickStopAndReset() {
+        for (int command : new int[] {0xBE, 0xBF}) {
+            for (int gate : new int[] {0, 10}) {
+                for (boolean looping : new boolean[] {false, true}) {
+                    for (boolean restart : new boolean[] {false, true}) {
+                        List<TrackEvent> events = new ArrayList<TrackEvent>();
+                        int index = 0;
+                        if (looping) events.add(system(index++, 0, 0xDD, 0));
+                        events.add(note(index++, 0, gate, 0));
+                        events.add(system(index++, 0, command, 0));
+                        if (restart) events.add(note(index++, 0, 1, 0));
+                        events.add(system(index, 2, looping ? 0xDD : 0xDF, looping ? 1 : 0));
+                        NativeProgram program = compile(events, 2);
+                        MidiPlan midi = new MidiProjector().project(program);
+                        TransportTimeline timeline = TransportTimeline.from(
+                                new PlaybackContent(midi, null, program), 0);
+                        RecordingReceiver receiver = new RecordingReceiver();
+                        MidiPlaybackParticipant participant = MidiPlaybackParticipant.open(
+                                midi, program, timeline, receiver);
+                        try {
+                            long cycleMicros = program.timing.rawTickToMicros(2);
+                            for (int pass = 0; pass < (looping ? 4 : 1); pass++) {
+                                participant.sync(pass * cycleMicros);
+                                eq("same-tick restart state", restart ? 1 : 0, receiver.activeNotes());
+                                participant.sync(pass * cycleMicros + program.timing.rawTickToMicros(1));
+                                eq("stop/reset leaves no held note", 0, receiver.activeNotes());
+                            }
+                        } finally {
+                            participant.close();
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private static void auditSessionResetTiming() {
+        List<TrackEvent> events = new ArrayList<TrackEvent>();
+        events.add(system(0, 0, 0xE2, 10));
+        events.add(note(1, 1, 10, 0));
+        events.add(system(2, 5, 0xBF, 0));
+        events.add(note(3, 5, 1, 0));
+        NativeProgram program = compile(events, 6);
+        MidiPlan midi = new MidiProjector().project(program);
+        RecordingReceiver receiver = new RecordingReceiver();
+        MidiPlaybackParticipant participant = MidiPlaybackParticipant.open(
+                midi, program, TransportTimeline.from(new PlaybackContent(midi, null, program), 0), receiver);
+        try {
+            participant.sync(program.timing.rawTickToMicros(1));
+            eq("level remains unchanged before reset", 20, receiver.lastControlValue(0, 7));
+            participant.sync(program.timing.rawTickToMicros(5));
+            eq("reset defaults arrive at reset time", 126, receiver.lastControlValue(0, 7));
+            eq("post-reset note remains active", 1, receiver.activeNotes());
+            participant.sync(program.timing.rawTickToMicros(6));
+            eq("post-reset note ends", 0, receiver.activeNotes());
+        } finally {
+            participant.close();
+        }
+    }
+
     private static void auditNativeInfiniteDirectRepeat() throws Exception {
         List<TrackEvent> events = new ArrayList<TrackEvent>();
         events.add(system(0, 0, 0xE2, 10));
@@ -366,6 +428,22 @@ public final class PlaybackTransportAudit {
 
         @Override
         public void close() {
+        }
+
+        int activeNotes() {
+            int[] active = new int[16];
+            for (ShortMessage message : messages) {
+                int channel = message.getChannel();
+                if (message.getCommand() == ShortMessage.NOTE_ON) active[channel]++;
+                else if (message.getCommand() == ShortMessage.NOTE_OFF) {
+                    if (--active[channel] < 0) fail("receiver note state", "note-off precedes note-on");
+                } else if (message.getCommand() == ShortMessage.CONTROL_CHANGE && message.getData1() == 120) {
+                    eq("receiver releases notes before all-off", 0, active[channel]);
+                }
+            }
+            int count = 0;
+            for (int channel : active) count += channel;
+            return count;
         }
 
         int count(int command, int note) {

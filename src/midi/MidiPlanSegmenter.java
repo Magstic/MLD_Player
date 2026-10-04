@@ -127,14 +127,12 @@ public final class MidiPlanSegmenter {
             long segmentEnd) {
         List<MidiPlan.CompiledNote> result = new ArrayList<MidiPlan.CompiledNote>();
         for (MidiPlan.CompiledNote note : source.notes) {
-            if (note.midiEndTick <= segmentStart || note.midiStartTick >= segmentEnd) {
+            if (note.midiEndTick < segmentStart || note.midiStartTick >= segmentEnd
+                    || (note.midiEndTick == segmentStart && note.midiStartTick < segmentStart)) {
                 continue;
             }
             long localStart = Math.max(note.midiStartTick, segmentStart) - segmentStart;
             long localEnd = Math.min(note.midiEndTick, segmentEnd) - segmentStart;
-            if (localEnd <= localStart) {
-                localEnd = localStart + 1L;
-            }
             result.add(copyNote(note, localStart, localEnd));
         }
         return result;
@@ -153,7 +151,7 @@ public final class MidiPlanSegmenter {
         return new MidiPlan.CompiledNote(
                 source.sourceTrack, source.sourceVoice, source.logicalChannel, source.midiChannel,
                 source.midiTrackIndex, source.midiNote, source.velocity, source.rawStartTick,
-                source.rawEndTick, midiStartTick, midiEndTick);
+                source.rawEndTick, midiStartTick, midiEndTick, source.startOrder, source.endOrder);
     }
     private static String controlKey(MidiPlan.MappedControlEvent control) {
         if (control.status == ShortMessage.CONTROL_CHANGE) {
@@ -192,9 +190,9 @@ public final class MidiPlanSegmenter {
                     if (byTick != 0) return byTick;
                     int byChannel = Integer.compare(left.midiChannel, right.midiChannel);
                     if (byChannel != 0) return byChannel;
-                    int byOrder = Integer.compare(left.order, right.order);
-                    if (byOrder != 0) return byOrder;
-                    return Integer.compare(left.data1, right.data1);
+                    int bySource = Integer.compare(left.sourceOrder, right.sourceOrder);
+                    if (bySource != 0) return bySource;
+                    return Integer.compare(left.order, right.order);
                 }
             };
 

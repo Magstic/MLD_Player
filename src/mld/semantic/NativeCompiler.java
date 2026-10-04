@@ -34,7 +34,8 @@ public final class NativeCompiler {
             semanticEnd = Math.max(semanticEnd, event.rawTick);
             if (event instanceof NoteEvent) {
                 semanticEnd = Math.max(
-                        semanticEnd, melody.processNote((NoteEvent) event, order++));
+                        semanticEnd, melody.processNote((NoteEvent) event));
+                order++;
             } else if (event instanceof ResourceEvent) {
                 audio.handleResource((ResourceEvent) event, order, melody.voiceMap(), timingRuntime);
                 order++;
@@ -42,7 +43,7 @@ public final class NativeCompiler {
                 audio.handleMachine((MachineDependentEvent) event, order++);
             } else if (event instanceof SystemEvent) {
                 SystemEvent s = (SystemEvent) event;
-                melody.processSystem(s, order);
+                melody.processSystem(s);
                 audio.handleSystem(s, order++);
                 TimingState.apply(timingRuntime, s);
             } else {

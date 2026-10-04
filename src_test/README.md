@@ -22,9 +22,12 @@ Current required tests:
 - `architecture.ArchitectureClosureAudit`
 - `main.ApplicationCompositionAudit`
 - `export.ExportSystemAudit`
-- `midi.MidiSerializationAudit`
+- `midi.MidiSerializationAudit` — same-tick causal ordering, zero-duration note
+  pairs, stop/reset and retrigger boundaries, continuing-cycle patch restoration,
+  loop clipping, segment priming and control provenance.
 - `playback.PlaybackInfrastructureAudit`
-- `playback.PlaybackTransportAudit`
+- `playback.PlaybackTransportAudit` — deterministic direct MIDI/PCM transport,
+  same-tick stop/reset across continuing loops and reset-default timing.
 - `mld.semantic.TimingSemanticsAudit`
 - `mld.semantic.OrdinaryNoteSemanticsAudit`
 - `mld.semantic.SystemEventSemanticsAudit`

@@ -150,6 +150,8 @@ public final class MidiPlan {
         public final int rawEndTick;
         public final long midiStartTick;
         public final long midiEndTick;
+        public final int startOrder;
+        public final int endOrder;
 
         public CompiledNote(
                 int sourceTrack,
@@ -162,7 +164,9 @@ public final class MidiPlan {
                 int rawStartTick,
                 int rawEndTick,
                 long midiStartTick,
-                long midiEndTick) {
+                long midiEndTick,
+                int startOrder,
+                int endOrder) {
             this.sourceTrack = sourceTrack;
             this.sourceVoice = sourceVoice;
             this.logicalChannel = logicalChannel;
@@ -174,6 +178,8 @@ public final class MidiPlan {
             this.rawEndTick = rawEndTick;
             this.midiStartTick = midiStartTick;
             this.midiEndTick = midiEndTick;
+            this.startOrder = startOrder;
+            this.endOrder = endOrder;
         }
     }
 
@@ -202,6 +208,11 @@ public final class MidiPlan {
         public final boolean hostMappingProxy;
         public final int sourceOrder;
         public final int order;
+
+        /** Primed segment controls execute before source events. */
+        public int executionOrder() {
+            return order < 0 ? Integer.MIN_VALUE : sourceOrder;
+        }
 
         /** Copies provenance while changing the output fields used by plan transformations. */
         MappedControlEvent(

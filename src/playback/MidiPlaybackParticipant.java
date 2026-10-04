@@ -381,7 +381,7 @@ final class MidiPlaybackParticipant implements AutoCloseable {
                 control.status,
                 control.data1,
                 control.data2,
-                control.order);
+                control.executionOrder());
     }
 
     private static Event noteOnEvent(long micros, MidiPlan.CompiledNote note) {
@@ -392,7 +392,7 @@ final class MidiPlaybackParticipant implements AutoCloseable {
                 ShortMessage.NOTE_ON,
                 note.midiNote,
                 note.velocity,
-                noteOrder(note));
+                note.startOrder);
     }
 
     private static Event noteOffEvent(long micros, MidiPlan.CompiledNote note) {
@@ -403,11 +403,7 @@ final class MidiPlaybackParticipant implements AutoCloseable {
                 ShortMessage.NOTE_OFF,
                 note.midiNote,
                 0,
-                noteOrder(note));
-    }
-
-    private static int noteOrder(MidiPlan.CompiledNote note) {
-        return (note.sourceTrack * 16) + note.sourceVoice;
+                note.endOrder);
     }
 
     private static void sort(List<Event> events) {
@@ -421,13 +417,9 @@ final class MidiPlaybackParticipant implements AutoCloseable {
             if (byTime != 0) return byTime;
             int byChannel = Integer.compare(left.channel, right.channel);
             if (byChannel != 0) return byChannel;
-            int byPhase = Integer.compare(left.phase, right.phase);
-            if (byPhase != 0) return byPhase;
             int byOrder = Integer.compare(left.order, right.order);
             if (byOrder != 0) return byOrder;
-            int byData1 = Integer.compare(left.data1, right.data1);
-            if (byData1 != 0) return byData1;
-            return Integer.compare(left.data2, right.data2);
+            return Integer.compare(left.phase, right.phase);
         }
     };
 

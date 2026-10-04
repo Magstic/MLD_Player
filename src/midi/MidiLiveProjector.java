@@ -47,7 +47,7 @@ public final class MidiLiveProjector {
                     control.status,
                     control.data1,
                     control.data2,
-                    control.order));
+                    control.executionOrder()));
         }
         for (MelodyProgram.NoteAction action
                 : cycle.program.melody.noteActions) {
@@ -84,9 +84,9 @@ public final class MidiLiveProjector {
             if (byTime != 0) return byTime;
             int byChannel = Integer.compare(left.channel, right.channel);
             if (byChannel != 0) return byChannel;
-            int byPhase = Integer.compare(left.phase, right.phase);
-            if (byPhase != 0) return byPhase;
-            return Integer.compare(left.order, right.order);
+            int byOrder = Integer.compare(left.order, right.order);
+            if (byOrder != 0) return byOrder;
+            return Integer.compare(left.phase, right.phase);
         }
     };
 

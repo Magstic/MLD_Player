@@ -42,6 +42,7 @@ final class MelodyState {
     private final List<String> warnings;
     private final Set<String> warningKeys;
     private int masterVolume = DEFAULT_MASTER_VOLUME;
+    private int nextOrder;
 
     MelodyState(int size, List<String> w, Set<String> k) {
         voiceMap = createIdentityVoiceMap(size);
@@ -49,7 +50,7 @@ final class MelodyState {
         warningKeys = k;
     }
 
-    int processNote(NoteEvent e, int order) {
+    int processNote(NoteEvent e) {
         int lane = laneIndex(e.trackIndex, e.voice);
         int logical = resolveVoiceMap(lane);
         if (logical < 0 || logical >= MAX_LOGICAL_CHANNELS) {
@@ -79,6 +80,7 @@ final class MelodyState {
             activeNotes.put(key, prev.refreshGate(rawEnd));
             return rawEnd;
         }
+        int order = nextOrder++;
         activeNotes.put(
                 key,
                 new ActiveNote(
@@ -94,23 +96,23 @@ final class MelodyState {
                         snapshot(ch),
                         sounding));
         if (sounding) {
-            noteActions.add(activeNotes.get(key).toAction(true, e.rawTick));
+            noteActions.add(activeNotes.get(key).toAction(true, e.rawTick, order));
         }
         return rawEnd;
     }
 
-    void processSystem(SystemEvent e, int order) {
+    void processSystem(SystemEvent e) {
         if (TimingState.isTempo(e)) return;
         boolean unmapped = false;
         switch (e.command) {
         case 0xB0:
             if (acceptTrackZero7Bit(e)) {
                 masterVolume = e.value;
-                record(e, -1, PATH_GLOBAL, order, null);
+                record(e, -1, PATH_GLOBAL, null);
             }
             break;
         case 0xB1:
-            if (acceptTrackZero7Bit(e)) record(e, -1, PATH_GLOBAL, order, null);
+            if (acceptTrackZero7Bit(e)) record(e, -1, PATH_GLOBAL, null);
             break;
         case 0xB3:
             unmapped = true;
@@ -130,7 +132,7 @@ final class MelodyState {
                     ch.mode = e.value & 7;
                     ch.percussion = (e.value & 1) != 0;
                     if (ch.mode == 1) applyNativePatchHelperState(ch);
-                    record(e, logical, PATH_PATCH, order, ch);
+                    record(e, logical, PATH_PATCH, ch);
                 }
             }
             unmapped = true;
@@ -140,59 +142,59 @@ final class MelodyState {
         case 0xBD:
             if (acceptTrackZero7Bit(e)) {
                 masterVolume = clamp(0, 127, masterVolume + e.value - 0x40);
-                record(e, -1, PATH_GLOBAL, order, null);
+                record(e, -1, PATH_GLOBAL, null);
             }
             break;
         case 0xBE:
             if (e.trackIndex == 0) {
                 if (e.value == 0) {
                     forceStopActiveNotes(e.rawTick);
-                    record(e, -1, PATH_GLOBAL, order, null);
+                    record(e, -1, PATH_GLOBAL, null);
                 } else warn("global_stop_nonzero_" + e.rawTick, "Ignoring nonzero global stop value " + e.value + " at raw tick " + e.rawTick + ".");
             }
             break;
         case 0xBF:
             if (e.trackIndex == 0) {
                 forceStopActiveNotes(e.rawTick);
-                record(e, -1, PATH_GLOBAL, order, null);
+                record(e, -1, PATH_GLOBAL, null);
                 resetChannelStates();
                 masterVolume = DEFAULT_MASTER_VOLUME;
                 resetVoiceMap();
             }
             break;
         case 0xE0:
-            program(e, order);
+            program(e);
             break;
         case 0xE1:
-            bank(e, order);
+            bank(e);
             break;
         case 0xE2:
-            absoluteLevel(e, order);
+            absoluteLevel(e);
             break;
         case 0xE3:
-            pan(e, order);
+            pan(e);
             break;
         case 0xE4:
-            pitchCoarse(e, order);
+            pitchCoarse(e);
             break;
         case 0xE5:
-            voice(e, order);
+            voice(e);
             unmapped = true;
             break;
         case 0xE6:
-            relativeLevel(e, order);
+            relativeLevel(e);
             break;
         case 0xE7:
-            pitchRange(e, order);
+            pitchRange(e);
             break;
         case 0xE8:
-            pitchFine(e, order);
+            pitchFine(e);
             break;
         case 0xE9:
-            pitchFine(e, order);
+            pitchFine(e);
             break;
         case 0xEA:
-            modulation(e, order);
+            modulation(e);
             break;
         default:
             unmapped = true;
@@ -209,8 +211,9 @@ final class MelodyState {
             if (a.rawEndTick > current) continue;
             max = Math.max(max, a.rawEndTick);
             if (a.sounding) {
-                notes.add(a.toNativeNote(a.rawEndTick));
-                noteActions.add(a.toAction(false, a.rawEndTick));
+                int order = nextOrder++;
+                notes.add(a.toNativeNote(a.rawEndTick, order));
+                noteActions.add(a.toAction(false, a.rawEndTick, order));
             }
             it.remove();
         }
@@ -296,65 +299,65 @@ final class MelodyState {
                 .append(channel.nativeValue);
     }
 
-    private void program(SystemEvent e, int o) {
+    private void program(SystemEvent e) {
         int l = resolveMappedControlChannel(e);
         if (l < 0) return;
         ChannelState c = channels[l];
         c.program = e.value & 63;
         applyNativePatchHelperState(c);
-        record(e, l, PATH_PATCH, o, c);
+        record(e, l, PATH_PATCH, c);
     }
 
-    private void bank(SystemEvent e, int o) {
+    private void bank(SystemEvent e) {
         int l = resolveMappedControlChannel(e);
         if (l < 0) return;
         ChannelState c = channels[l];
         c.bank = e.value & 63;
         if (c.mode == 1) applyNativePatchHelperState(c);
-        record(e, l, PATH_PATCH, o, c);
+        record(e, l, PATH_PATCH, c);
     }
 
-    private void absoluteLevel(SystemEvent e, int o) {
+    private void absoluteLevel(SystemEvent e) {
         int l = resolveMappedControlChannel(e);
         if (l < 0) return;
         ChannelState c = channels[l];
         c.level = e.value & 63;
-        record(e, l, PATH_LEVEL_PAN, o, c);
+        record(e, l, PATH_LEVEL_PAN, c);
     }
 
-    private void relativeLevel(SystemEvent e, int o) {
+    private void relativeLevel(SystemEvent e) {
         int l = resolveMappedControlChannel(e);
         if (l < 0) return;
         ChannelState c = channels[l];
         c.level = clamp(0, 63, c.level + ((e.value & 63) - 32));
-        record(e, l, PATH_LEVEL_PAN, o, c);
+        record(e, l, PATH_LEVEL_PAN, c);
     }
 
-    private void pan(SystemEvent e, int o) {
+    private void pan(SystemEvent e) {
         int l = resolveMappedControlChannel(e);
         if (l < 0) return;
         ChannelState c = channels[l];
         c.pan = e.value & 63;
-        record(e, l, PATH_LEVEL_PAN, o, c);
+        record(e, l, PATH_LEVEL_PAN, c);
     }
 
-    private void pitchCoarse(SystemEvent e, int o) {
+    private void pitchCoarse(SystemEvent e) {
         int l = resolveMappedControlChannel(e);
         if (l < 0) return;
         ChannelState c = channels[l];
         c.pitchCoarse = e.value & 63;
-        record(e, l, PATH_PITCH, o, c);
+        record(e, l, PATH_PITCH, c);
     }
 
-    private void pitchFine(SystemEvent e, int o) {
+    private void pitchFine(SystemEvent e) {
         int l = resolveMappedControlChannel(e);
         if (l < 0) return;
         ChannelState c = channels[l];
         c.pitchFine = e.value & 63;
-        record(e, l, PATH_PITCH, o, c);
+        record(e, l, PATH_PITCH, c);
     }
 
-    private void pitchRange(SystemEvent e, int o) {
+    private void pitchRange(SystemEvent e) {
         int l = resolveMappedControlChannel(e);
         if (l < 0) return;
         int range = e.value & 63;
@@ -367,23 +370,23 @@ final class MelodyState {
         }
         ChannelState c = channels[l];
         c.pitchRange = range;
-        record(e, l, PATH_PITCH, o, c);
+        record(e, l, PATH_PITCH, c);
     }
 
-    private void modulation(SystemEvent e, int o) {
+    private void modulation(SystemEvent e) {
         int l = resolveMappedControlChannel(e);
         if (l < 0) return;
         ChannelState c = channels[l];
         c.modulation = e.value & 63;
-        record(e, l, PATH_LOOKUP, o, c);
+        record(e, l, PATH_LOOKUP, c);
     }
 
-    private void voice(SystemEvent e, int o) {
+    private void voice(SystemEvent e) {
         if (e.part < 0) return;
         int lane = laneIndex(e.trackIndex, e.part);
         if (lane >= 0 && lane < voiceMap.length) {
             voiceMap[lane] = e.value & 63;
-            record(e, voiceMap[lane], PATH_VOICE, o, null);
+            record(e, voiceMap[lane], PATH_VOICE, null);
         }
     }
 
@@ -393,14 +396,15 @@ final class MelodyState {
             ActiveNote a = it.next().getValue();
             int end = Math.max(a.rawStartTick, raw);
             if (a.sounding) {
-                notes.add(a.toNativeNote(end));
-                noteActions.add(a.toAction(false, end));
+                int order = nextOrder++;
+                notes.add(a.toNativeNote(end, order));
+                noteActions.add(a.toAction(false, end, order));
             }
             it.remove();
         }
     }
 
-    private void record(SystemEvent e, int logical, String path, int order, ChannelState ch) {
+    private void record(SystemEvent e, int logical, String path, ChannelState ch) {
         controls.add(new MelodyProgram.NativeControl(
                 e.trackIndex,
                 e.command,
@@ -414,7 +418,7 @@ final class MelodyState {
                 logical >= 0,
                 logical >= 0,
                 logical >= 0 ? 128 : 0,
-                order,
+                nextOrder++,
                 ch == null ? null : snapshot(ch)));
     }
 
@@ -591,11 +595,11 @@ final class MelodyState {
             return new ActiveNote(sourceTrack, sourceVoice, logicalChannel, nativeNote, pitchOffset, velocity, rawStartTick, end, order, channel, sounding);
         }
 
-        MelodyProgram.NativeNote toNativeNote(int end) {
-            return new MelodyProgram.NativeNote(sourceTrack, sourceVoice, logicalChannel, nativeNote, pitchOffset, velocity, rawStartTick, end, order, channel);
+        MelodyProgram.NativeNote toNativeNote(int end, int endOrder) {
+            return new MelodyProgram.NativeNote(sourceTrack, sourceVoice, logicalChannel, nativeNote, pitchOffset, velocity, rawStartTick, end, order, endOrder, channel);
         }
 
-        MelodyProgram.NoteAction toAction(boolean noteOn, int rawTick) {
+        MelodyProgram.NoteAction toAction(boolean noteOn, int rawTick, int actionOrder) {
             return new MelodyProgram.NoteAction(
                     noteOn,
                     sourceTrack,
@@ -604,7 +608,7 @@ final class MelodyState {
                     pitchOffset,
                     velocity,
                     rawTick,
-                    order,
+                    actionOrder,
                     channel);
         }
     }

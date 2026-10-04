@@ -30,7 +30,7 @@ final class MidiProjectionState {
     MidiProjectionState(MidiTimingMapper t, List<String> w) {
         timing = t;
         warnings = w;
-        emitInitialMidiDefaults(0);
+        emitInitialMidiDefaults(0, 0L);
     }
 
     void setTiming(MidiTimingMapper timing) {
@@ -52,8 +52,9 @@ final class MidiProjectionState {
     }
 
     Result project(NativeProgram p) {
-        List<ActionRef> a = new ArrayList<ActionRef>(p.melody.notes.size() + p.melody.controls.size());
-        for (MelodyProgram.NativeNote n : p.melody.notes) {
+        List<ActionRef> a = new ArrayList<ActionRef>(p.melody.noteActions.size() + p.melody.controls.size());
+        for (MelodyProgram.NoteAction n : p.melody.noteActions) {
+            if (!n.noteOn) continue;
             a.add(ActionRef.note(n));
             // Classify percussion channels for the whole song before emitting patches.
             laneTracker.observeNote(n.logicalChannel, n.channel.percussion);
@@ -66,15 +67,16 @@ final class MidiProjectionState {
                 warnHostChannel(g.logicalChannel, "note");
                 continue;
             }
-            long start = timing.rawToMidiTick(g.rawStartTick);
             long end = timing.rawToMidiTick(g.rawEndTick);
-            if (g.sounding) end = normalizeMidiEnd(start, end);
             total = Math.max(total, end);
         }
+        for (MelodyProgram.NativeNote n : p.melody.notes) total = Math.max(total, processNote(n));
         for (ActionRef x : a) {
             if (x.note != null) {
-                emitter.setSourceOrder(x.note.order);
-                total = Math.max(total, processNote(x.note));
+                MelodyProgram.NoteAction n = x.note;
+                emitter.setSourceOrder(n.order);
+                emitPatchIfNeeded(n.channel, n.logicalChannel, n.sourceTrack, -1,
+                        "note_patch_sync", n.rawTick, timing.rawToMidiTick(n.rawTick));
             } else {
                 emitter.setSourceOrder(x.control.order);
                 processControl(x.control);
@@ -90,12 +92,11 @@ final class MidiProjectionState {
             return -1;
         }
         boolean percussion = n.channel.percussion;
-        emitPatchIfNeeded(n.channel, l, n.sourceTrack, -1, "note_patch_sync", n.rawStartTick, timing.rawToMidiTick(n.rawStartTick));
         int base = percussion ? 35 : 45;
         int midiNote = clamp(0, 127, base + n.pitchOffset);
         long start = timing.rawToMidiTick(n.rawStartTick);
-        long end = normalizeMidiEnd(start, timing.rawToMidiTick(n.rawEndTick));
-        notes.add(new MidiPlan.CompiledNote(n.sourceTrack, n.sourceVoice, l, l, l + 1, midiNote, n.velocity, n.rawStartTick, n.rawEndTick, start, end));
+        long end = timing.rawToMidiTick(n.rawEndTick);
+        notes.add(new MidiPlan.CompiledNote(n.sourceTrack, n.sourceVoice, l, l, l + 1, midiNote, n.velocity, n.rawStartTick, n.rawEndTick, start, end, n.order, n.endOrder));
         return end;
     }
 
@@ -119,7 +120,7 @@ final class MidiProjectionState {
             emitter.emitAllSoundOff(c.sourceTrack, c.sourceCommand, c.sourceName, c.rawTick, t);
             Arrays.fill(pitchRangeDirty, false);
             emitter.resetCaches();
-            emitInitialMidiDefaults(t);
+            emitInitialMidiDefaults(c.rawTick, t);
             return;
 
         case 0xBA:
@@ -214,14 +215,14 @@ final class MidiProjectionState {
                 MidiPatchMapper.translate(channel, laneTracker.isAuthoritativeSpecial(l)));
     }
 
-    private void emitInitialMidiDefaults(long t) {
+    private void emitInitialMidiDefaults(int raw, long t) {
         MelodyProgram.ChannelSnapshot d = defaultSnapshot();
         for (int ch = 0; ch < 16; ch++) {
-            emitter.emitVolume(-1, -1, "default_level", 0, ch, t, computeMidiVolume(d));
-            emitter.emitPan(-1, -1, "default_pan", 0, ch, t, computeMidiPan(d));
-            emitter.emitPitchRange(-1, -1, "default_pitch_range", 0, ch, t, d.pitchRange);
-            emitter.emitPitchBend(-1, -1, "default_pitch", 0, ch, t, computePitchBend(d));
-            emitter.emitModulation(-1, -1, "default_modulation", 0, ch, t, d.modulation * 2);
+            emitter.emitVolume(-1, -1, "default_level", raw, ch, t, computeMidiVolume(d));
+            emitter.emitPan(-1, -1, "default_pan", raw, ch, t, computeMidiPan(d));
+            emitter.emitPitchRange(-1, -1, "default_pitch_range", raw, ch, t, d.pitchRange);
+            emitter.emitPitchBend(-1, -1, "default_pitch", raw, ch, t, computePitchBend(d));
+            emitter.emitModulation(-1, -1, "default_modulation", raw, ch, t, d.modulation * 2);
         }
     }
 
@@ -243,10 +244,6 @@ final class MidiProjectionState {
 
     private static int computePitchBend(MelodyProgram.ChannelSnapshot c) {
         return clamp(0, 16383, (8 * (c.pitchFine + 32 * c.pitchCoarse)) - 256);
-    }
-
-    private static long normalizeMidiEnd(long s, long e) {
-        return e <= s ? s + 1 : e;
     }
 
     private static boolean isProjectionChannel(int c) {
@@ -295,16 +292,16 @@ final class MidiProjectionState {
 
     private static final class ActionRef {
         final int order;
-        final MelodyProgram.NativeNote note;
+        final MelodyProgram.NoteAction note;
         final MelodyProgram.NativeControl control;
 
-        private ActionRef(int o, MelodyProgram.NativeNote n, MelodyProgram.NativeControl c) {
+        private ActionRef(int o, MelodyProgram.NoteAction n, MelodyProgram.NativeControl c) {
             order = o;
             note = n;
             control = c;
         }
 
-        static ActionRef note(MelodyProgram.NativeNote n) {
+        static ActionRef note(MelodyProgram.NoteAction n) {
             return new ActionRef(n.order, n, null);
         }
 

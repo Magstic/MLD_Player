@@ -1,5 +1,7 @@
 package midi;
 
+import java.io.ByteArrayOutputStream;
+import java.io.DataOutputStream;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
@@ -10,7 +12,10 @@ import javax.sound.midi.Sequence;
 import javax.sound.midi.ShortMessage;
 import javax.sound.midi.Track;
 
+import mld.compile.MldCompilation;
+import mld.compile.MldCompiler;
 import mld.semantic.MelodyProgram;
+import mld.semantic.NativeLoopRuntime;
 
 /** Regression audit for the single MIDI serializer and its plan transformations. */
 public final class MidiSerializationAudit {
@@ -19,6 +24,7 @@ public final class MidiSerializationAudit {
 
     public static void main(String[] args) throws Exception {
         auditSameTickOrdering();
+        auditCausalOrdering();
         auditInfiniteLoopEncodingBoundary();
         auditSegmentPrimingAndClipping();
         auditControlProvenanceThroughTransforms();
@@ -31,8 +37,8 @@ public final class MidiSerializationAudit {
 
     private static void auditSameTickOrdering() throws Exception {
         List<MidiPlan.CompiledNote> notes = new ArrayList<MidiPlan.CompiledNote>();
-        notes.add(note(60, 0L, 10L, 0, 0));
-        notes.add(note(62, 10L, 20L, 0, 1));
+        notes.add(note(60, 0L, 10L, 0, 1));
+        notes.add(note(62, 10L, 20L, 3, 4));
 
         List<MidiPlan.MappedControlEvent> controls = new ArrayList<MidiPlan.MappedControlEvent>();
         controls.add(control(ShortMessage.CONTROL_CHANGE, 10, 64, 10L, 2));
@@ -49,6 +55,170 @@ public final class MidiSerializationAudit {
         eq("second control phase", ShortMessage.CONTROL_CHANGE, messages.get(2).getCommand());
         eq("second control source order", 10, messages.get(2).getData1());
         eq("note-on phase", ShortMessage.NOTE_ON, messages.get(3).getCommand());
+    }
+
+    private static void auditCausalOrdering() throws Exception {
+        MldCompilation patch = compile(0, 255, 224, 1, 0, 0, 10,
+                0, 255, 224, 2, 2, 255, 223, 0);
+        List<ShortMessage> patchMessages = causalMessages(
+                new MidiSequenceEncoder().encode(patch.getMidiPlan()).sequence, 0L);
+        commands("patch follows earlier note", patchMessages,
+                ShortMessage.PROGRAM_CHANGE, ShortMessage.NOTE_ON, ShortMessage.PROGRAM_CHANGE);
+        eq("first note patch", 9, patchMessages.get(0).getData1());
+        eq("later patch", 16, patchMessages.get(2).getData1());
+
+        MldCompilation retrigger = compile(0, 0, 0, 0, 0, 2, 2, 255, 223, 0);
+        Sequence retriggerMidi = new MidiSequenceEncoder().encode(retrigger.getMidiPlan()).sequence;
+        commands("zero gate expires before retrigger", causalMessages(retriggerMidi, 0L),
+                ShortMessage.PROGRAM_CHANGE, ShortMessage.NOTE_ON,
+                ShortMessage.NOTE_OFF, ShortMessage.NOTE_ON);
+        balanced(retriggerMidi);
+        MldCompilation finalZero = compile(5, 0, 0);
+        Sequence finalZeroMidi = new MidiSequenceEncoder().encode(finalZero.getMidiPlan()).sequence;
+        commands("final zero gate is retained", causalMessages(finalZeroMidi, 200L),
+                ShortMessage.PROGRAM_CHANGE, ShortMessage.NOTE_ON, ShortMessage.NOTE_OFF);
+        balanced(finalZeroMidi);
+        MldCompilation expiryAndStop = compile(0, 1, 10, 1, 4, 0,
+                0, 255, 190, 0, 2, 255, 223, 0);
+        Sequence expiryMidi = new MidiSequenceEncoder().encode(expiryAndStop.getMidiPlan()).sequence;
+        List<ShortMessage> expiryMessages = causalMessages(expiryMidi, 40L);
+        commands("expiry precedes forced release", expiryMessages, ShortMessage.NOTE_ON,
+                ShortMessage.NOTE_OFF, ShortMessage.NOTE_OFF, ShortMessage.CONTROL_CHANGE);
+        eq("expired pitch first", 49, expiryMessages.get(1).getData1());
+        eq("forced pitch second", 46, expiryMessages.get(2).getData1());
+        balanced(expiryMidi);
+
+        for (int command : new int[] {0xBE, 0xBF}) {
+            for (int gate : new int[] {0, 10}) {
+                for (boolean restart : new boolean[] {false, true}) {
+                    List<Integer> bytes = new ArrayList<Integer>();
+                    Collections.addAll(bytes, 0, 0, gate, 0, 255, command, 0);
+                    if (restart) Collections.addAll(bytes, 0, 0, 1);
+                    Collections.addAll(bytes, 2, 255, 223, 0);
+                    MldCompilation stopped = compile(ints(bytes));
+                    MidiPlan plan = stopped.getMidiPlan();
+                    Sequence midi = new MidiSequenceEncoder().encode(plan).sequence;
+                    assertStopOrder("linear stop/reset", causalMessages(midi, 0L), restart);
+                    balanced(midi);
+                    MidiPlan segment = new MidiPlanSegmenter().slice(plan, 0L, 80L, false);
+                    Sequence sliced = new MidiSequenceEncoder().encode(segment).sequence;
+                    assertStopOrder("sliced stop/reset", causalMessages(sliced, 0L), restart);
+                    balanced(sliced);
+
+                    bytes.set(bytes.size() - 2, 221); // Replace DF with an infinite DD end.
+                    bytes.set(bytes.size() - 1, 1);
+                    bytes.add(0, 0); bytes.add(1, 255); bytes.add(2, 221); bytes.add(3, 0);
+                    bytes.add(4, 1); bytes.add(4, 224); bytes.add(4, 255); bytes.add(4, 0);
+                    MldCompilation loop = compile(ints(bytes));
+                    Sequence loopMidi = new MidiSequenceEncoder().encode(loop.getMidiPlan()).sequence;
+                    balanced(loopMidi);
+                    int noteOns = 0;
+                    for (Track track : loopMidi.getTracks()) {
+                        for (int i = 0; i < track.size(); i++) {
+                            MidiEvent event = track.get(i);
+                            if (event.getMessage() instanceof ShortMessage
+                                    && ((ShortMessage) event.getMessage()).getCommand() == ShortMessage.NOTE_ON) {
+                                noteOns++;
+                                if (event.getTick() >= loop.getMidiPlan().loopInfo.loopEndMidiTick)
+                                    fail("loop boundary", "note-on belongs to the next pass");
+                            }
+                        }
+                    }
+                    eq("one encoded loop pass", restart ? 2 : 1, noteOns);
+                    NativeLoopRuntime runtime = loop.getNativeProgram().nativeLoop.openRuntime();
+                    MidiLiveProjector live = new MidiLiveProjector(loop.getMidiPlan(), loop.getNativeProgram());
+                    int program = command == 0xBF && restart ? 0 : 9;
+                    for (int pass = 0; pass < 3; pass++) {
+                        List<ShortMessage> messages = new ArrayList<ShortMessage>();
+                        int active = 0;
+                        int noteOnsInCycle = 0;
+                        for (MidiLiveProjector.Event event : live.project(runtime.nextCycle())) {
+                            if (event.channel != 0) continue;
+                            if (event.command == ShortMessage.PROGRAM_CHANGE) program = event.data1;
+                            if (event.command == ShortMessage.NOTE_ON) {
+                                eq("live note patch after reset", command == 0xBF && noteOnsInCycle > 0 ? 0 : 9, program);
+                                noteOnsInCycle++;
+                                active++;
+                            }
+                            else if (event.command == ShortMessage.NOTE_OFF) active--;
+                            else if (event.command == ShortMessage.CONTROL_CHANGE && event.data1 == 120)
+                                eq("notes released before live all-off", 0, active);
+                            if (event.command == ShortMessage.NOTE_ON || event.command == ShortMessage.NOTE_OFF
+                                    || (event.command == ShortMessage.CONTROL_CHANGE && event.data1 == 120)) {
+                                ShortMessage message = new ShortMessage();
+                                message.setMessage(event.command, event.channel, event.data1, event.data2);
+                                messages.add(message);
+                            }
+                        }
+                        eq("live cycle leaves no held note", 0, active);
+                        commands("live stop/reset order", messages, restart
+                                ? new int[] {ShortMessage.NOTE_ON, ShortMessage.NOTE_OFF,
+                                    ShortMessage.CONTROL_CHANGE, ShortMessage.NOTE_ON, ShortMessage.NOTE_OFF}
+                                : new int[] {ShortMessage.NOTE_ON, ShortMessage.NOTE_OFF, ShortMessage.CONTROL_CHANGE});
+                    }
+                }
+            }
+        }
+    }
+
+    private static void assertStopOrder(String label, List<ShortMessage> messages, boolean restart) {
+        List<ShortMessage> transitions = new ArrayList<ShortMessage>();
+        for (ShortMessage message : messages)
+            if (message.getCommand() != ShortMessage.PROGRAM_CHANGE) transitions.add(message);
+        commands(label, transitions, restart
+                ? new int[] {ShortMessage.NOTE_ON, ShortMessage.NOTE_OFF,
+                    ShortMessage.CONTROL_CHANGE, ShortMessage.NOTE_ON}
+                : new int[] {ShortMessage.NOTE_ON, ShortMessage.NOTE_OFF, ShortMessage.CONTROL_CHANGE});
+    }
+
+    private static List<ShortMessage> causalMessages(Sequence sequence, long tick) {
+        List<ShortMessage> result = new ArrayList<ShortMessage>();
+        for (ShortMessage message : shortMessagesAt(sequence.getTracks()[1], tick)) {
+            int command = message.getCommand();
+            if (command == ShortMessage.NOTE_ON || command == ShortMessage.NOTE_OFF
+                    || command == ShortMessage.PROGRAM_CHANGE
+                    || (command == ShortMessage.CONTROL_CHANGE && message.getData1() == 120)) result.add(message);
+        }
+        return result;
+    }
+
+    private static void commands(String label, List<ShortMessage> messages, int... expected) {
+        eq(label + " count", expected.length, messages.size());
+        for (int i = 0; i < expected.length; i++) eq(label + " event " + i, expected[i], messages.get(i).getCommand());
+    }
+
+    private static void balanced(Sequence sequence) {
+        for (Track track : sequence.getTracks()) {
+            int[] active = new int[128];
+            for (int i = 0; i < track.size(); i++) {
+                if (!(track.get(i).getMessage() instanceof ShortMessage)) continue;
+                ShortMessage message = (ShortMessage) track.get(i).getMessage();
+                if (message.getCommand() == ShortMessage.NOTE_ON) active[message.getData1()]++;
+                else if (message.getCommand() == ShortMessage.NOTE_OFF) {
+                    if (--active[message.getData1()] < 0) fail("balanced MIDI", "note-off precedes its note-on");
+                } else if (message.getCommand() == ShortMessage.CONTROL_CHANGE && message.getData1() == 120) {
+                    for (int count : active) eq("notes released before all-off", 0, count);
+                }
+            }
+            for (int count : active) eq("no held note at MIDI end", 0, count);
+        }
+    }
+
+    private static int[] ints(List<Integer> values) {
+        int[] result = new int[values.size()];
+        for (int i = 0; i < result.length; i++) result[i] = values.get(i);
+        return result;
+    }
+
+    private static MldCompilation compile(int... events) throws Exception {
+        ByteArrayOutputStream bytes = new ByteArrayOutputStream();
+        DataOutputStream out = new DataOutputStream(bytes);
+        out.writeBytes("melo"); out.writeInt(21 + events.length); out.writeShort(0);
+        out.write(new byte[] {1, 1, 1});
+        out.writeBytes("note"); out.writeShort(2); out.writeShort(0);
+        out.writeBytes("trac"); out.writeInt(events.length);
+        for (int value : events) out.writeByte(value);
+        return new MldCompiler().compile(bytes.toByteArray());
     }
 
     private static void auditInfiniteLoopEncodingBoundary() throws Exception {
@@ -96,8 +266,8 @@ public final class MidiSerializationAudit {
         List<ShortMessage> tickZero = shortMessagesAt(sequence.getTracks()[1], 0L);
         eq("primed + boundary control + note-on", 3, tickZero.size());
         eq("primed program first", ShortMessage.PROGRAM_CHANGE, tickZero.get(0).getCommand());
-        eq("boundary volume second", 7, tickZero.get(1).getData1());
-        eq("clipped note-on last", ShortMessage.NOTE_ON, tickZero.get(2).getCommand());
+        eq("carried note restored before boundary control", ShortMessage.NOTE_ON, tickZero.get(1).getCommand());
+        eq("boundary volume updates carried note", 7, tickZero.get(2).getData1());
     }
 
     private static void auditControlProvenanceThroughTransforms() {
@@ -108,7 +278,7 @@ public final class MidiSerializationAudit {
         controls.add(new MidiPlan.MappedControlEvent(source, 4, 5, 0L, 20, "initial_level", 0));
         controls.add(source);
         List<MidiPlan.CompiledNote> notes = Collections.singletonList(new MidiPlan.CompiledNote(
-                2, 0, 4, 4, 5, 60, 100, 0, 10, 0L, 100L));
+                2, 0, 4, 4, 5, 60, 100, 0, 10, 0L, 100L, 1, 15));
         MidiLaneMapper.LaneTracker lanes = new MidiLaneMapper.LaneTracker();
         lanes.observeNote(4, false);
         List<MidiPlan.TempoPoint> tempos = tempos(tempo(0L, 500000));
@@ -176,7 +346,7 @@ public final class MidiSerializationAudit {
         lanes.observeActive(controlOnlyLane);
         List<MidiPlan.CompiledNote> notes = Collections.singletonList(new MidiPlan.CompiledNote(
                 0, 0, soundingLane, soundingLane, soundingLane + 1,
-                60, 100, 0, 20, 0L, 20L));
+                60, 100, 0, 20, 0L, 20L, 0, 4));
         List<MidiPlan.MappedControlEvent> controls = new ArrayList<MidiPlan.MappedControlEvent>();
         controls.add(laneControl(soundingLane, ShortMessage.PROGRAM_CHANGE, percussion ? 0 : 74, 0, 0L, 0));
         // Patch, pitch and level changes on a control-only lane must stay isolated.
@@ -235,11 +405,11 @@ public final class MidiSerializationAudit {
             int midiNote,
             long startTick,
             long endTick,
-            int sourceTrack,
-            int sourceVoice) {
+            int startOrder,
+            int endOrder) {
         return new MidiPlan.CompiledNote(
-                sourceTrack,
-                sourceVoice,
+                0,
+                0,
                 0,
                 0,
                 1,
@@ -248,7 +418,9 @@ public final class MidiSerializationAudit {
                 0,
                 0,
                 startTick,
-                endTick);
+                endTick,
+                startOrder,
+                endOrder);
     }
 
     private static MidiPlan.MappedControlEvent control(

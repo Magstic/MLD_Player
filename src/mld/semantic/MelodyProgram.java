@@ -140,9 +140,10 @@ public final class MelodyProgram {
         public final int rawStartTick;
         public final int rawEndTick;
         public final int order;
+        public final int endOrder;
         public final ChannelSnapshot channel;
 
-        public NativeNote(int a, int b, int c, int d, int e, int f, int g, int h, int i, ChannelSnapshot j) {
+        public NativeNote(int a, int b, int c, int d, int e, int f, int g, int h, int i, int endOrder, ChannelSnapshot j) {
             sourceTrack = a;
             sourceVoice = b;
             logicalChannel = c;
@@ -152,6 +153,7 @@ public final class MelodyProgram {
             rawStartTick = g;
             rawEndTick = h;
             order = i;
+            this.endOrder = endOrder;
             channel = j;
         }
     }

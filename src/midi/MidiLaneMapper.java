@@ -154,7 +154,9 @@ final class MidiLaneMapper {
                     note.rawStartTick,
                     note.rawEndTick,
                     note.midiStartTick,
-                    note.midiEndTick));
+                    note.midiEndTick,
+                    note.startOrder,
+                    note.endOrder));
         }
         return remapped;
     }
