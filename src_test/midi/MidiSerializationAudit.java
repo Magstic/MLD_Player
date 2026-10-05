@@ -25,6 +25,7 @@ public final class MidiSerializationAudit {
     public static void main(String[] args) throws Exception {
         auditSameTickOrdering();
         auditCausalOrdering();
+        auditResetControlOrdering();
         auditInfiniteLoopEncodingBoundary();
         auditSegmentPrimingAndClipping();
         auditControlProvenanceThroughTransforms();
@@ -63,15 +64,17 @@ public final class MidiSerializationAudit {
         List<ShortMessage> patchMessages = causalMessages(
                 new MidiSequenceEncoder().encode(patch.getMidiPlan()).sequence, 0L);
         commands("patch follows earlier note", patchMessages,
-                ShortMessage.PROGRAM_CHANGE, ShortMessage.NOTE_ON, ShortMessage.PROGRAM_CHANGE);
-        eq("first note patch", 9, patchMessages.get(0).getData1());
-        eq("later patch", 16, patchMessages.get(2).getData1());
+                ShortMessage.PROGRAM_CHANGE, ShortMessage.PROGRAM_CHANGE,
+                ShortMessage.NOTE_ON, ShortMessage.PROGRAM_CHANGE);
+        eq("source patch", 9, patchMessages.get(0).getData1());
+        eq("first note patch", 9, patchMessages.get(1).getData1());
+        eq("later patch", 16, patchMessages.get(3).getData1());
 
         MldCompilation retrigger = compile(0, 0, 0, 0, 0, 2, 2, 255, 223, 0);
         Sequence retriggerMidi = new MidiSequenceEncoder().encode(retrigger.getMidiPlan()).sequence;
         commands("zero gate expires before retrigger", causalMessages(retriggerMidi, 0L),
                 ShortMessage.PROGRAM_CHANGE, ShortMessage.NOTE_ON,
-                ShortMessage.NOTE_OFF, ShortMessage.NOTE_ON);
+                ShortMessage.NOTE_OFF, ShortMessage.PROGRAM_CHANGE, ShortMessage.NOTE_ON);
         balanced(retriggerMidi);
         MldCompilation finalZero = compile(5, 0, 0);
         Sequence finalZeroMidi = new MidiSequenceEncoder().encode(finalZero.getMidiPlan()).sequence;
@@ -82,10 +85,10 @@ public final class MidiSerializationAudit {
                 0, 255, 190, 0, 2, 255, 223, 0);
         Sequence expiryMidi = new MidiSequenceEncoder().encode(expiryAndStop.getMidiPlan()).sequence;
         List<ShortMessage> expiryMessages = causalMessages(expiryMidi, 40L);
-        commands("expiry precedes forced release", expiryMessages, ShortMessage.NOTE_ON,
-                ShortMessage.NOTE_OFF, ShortMessage.NOTE_OFF, ShortMessage.CONTROL_CHANGE);
-        eq("expired pitch first", 49, expiryMessages.get(1).getData1());
-        eq("forced pitch second", 46, expiryMessages.get(2).getData1());
+        commands("expiry precedes forced release", expiryMessages, ShortMessage.PROGRAM_CHANGE,
+                ShortMessage.NOTE_ON, ShortMessage.NOTE_OFF, ShortMessage.NOTE_OFF, ShortMessage.CONTROL_CHANGE);
+        eq("expired pitch first", 49, expiryMessages.get(2).getData1());
+        eq("forced pitch second", 46, expiryMessages.get(3).getData1());
         balanced(expiryMidi);
 
         for (int command : new int[] {0xBE, 0xBF}) {
@@ -132,9 +135,13 @@ public final class MidiSerializationAudit {
                         List<ShortMessage> messages = new ArrayList<ShortMessage>();
                         int active = 0;
                         int noteOnsInCycle = 0;
+                        int programEvents = 0;
                         for (MidiLiveProjector.Event event : live.project(runtime.nextCycle())) {
                             if (event.channel != 0) continue;
-                            if (event.command == ShortMessage.PROGRAM_CHANGE) program = event.data1;
+                            if (event.command == ShortMessage.PROGRAM_CHANGE) {
+                                program = event.data1;
+                                programEvents++;
+                            }
                             if (event.command == ShortMessage.NOTE_ON) {
                                 eq("live note patch after reset", command == 0xBF && noteOnsInCycle > 0 ? 0 : 9, program);
                                 noteOnsInCycle++;
@@ -150,6 +157,7 @@ public final class MidiSerializationAudit {
                                 messages.add(message);
                             }
                         }
+                        eq("live cycle retains each patch request", restart ? 3 : 2, programEvents);
                         eq("live cycle leaves no held note", 0, active);
                         commands("live stop/reset order", messages, restart
                                 ? new int[] {ShortMessage.NOTE_ON, ShortMessage.NOTE_OFF,
@@ -158,6 +166,31 @@ public final class MidiSerializationAudit {
                     }
                 }
             }
+        }
+    }
+
+    private static void auditResetControlOrdering() throws Exception {
+        for (boolean percussion : new boolean[] {false, true}) {
+            MldCompilation reset = percussion
+                    ? compile(0, 255, 186, 1, 0, 0, 1, 0, 255, 229, 1,
+                            0, 255, 186, 9, 0, 0, 1, 2, 255, 191, 0, 2, 255, 223, 0)
+                    : compile(0, 0, 1, 2, 255, 191, 0, 2, 255, 223, 0);
+            Sequence sequence = new MidiSequenceEncoder().encode(reset.getMidiPlan()).sequence;
+            int resetControls = 0;
+            for (int channel = 0; channel < 16; channel++) {
+                List<ShortMessage> messages = shortMessagesAt(sequence.getTracks()[channel + 1], 80L);
+                resetControls += messages.size();
+                if (messages.isEmpty()) continue;
+                int allOffs = percussion && channel == 9 ? 2 : 1;
+                eq("reset controls retained", allOffs * 9, messages.size());
+                for (int i = 0; i < allOffs; i++) {
+                    eq("reset all-off status", ShortMessage.CONTROL_CHANGE, messages.get(i).getCommand());
+                    eq("reset releases sound before defaults", 120, messages.get(i).getData1());
+                }
+                eq("reset level follows all-off", 7, messages.get(allOffs).getData1());
+                eq("reset pan follows level", 10, messages.get(allOffs + 1).getData1());
+            }
+            eq("reset controls cover all logical channels", 16 * 9, resetControls);
         }
     }
 

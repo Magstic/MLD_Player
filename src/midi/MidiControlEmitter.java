@@ -6,14 +6,13 @@ import java.util.Map;
 import javax.sound.midi.ShortMessage;
 
 /**
- * Emits and de-duplicates concrete host MIDI controls.
+ * Emits patches and concrete host MIDI controls, caching controller and pitch-bend values.
  */
 final class MidiControlEmitter {
     private static final int MIDI_CHANNEL_COUNT = 16;
     private final List<MidiPlan.MappedControlEvent> out;
     private final Map<Integer, Integer> lastControls = new LinkedHashMap<Integer, Integer>();
     private final Map<Integer, Integer> lastBends = new LinkedHashMap<Integer, Integer>();
-    private final Map<Integer, Integer> lastPrograms = new LinkedHashMap<Integer, Integer>();
     private int sourceOrder = -1;
     private int nextOrder;
 
@@ -26,8 +25,6 @@ final class MidiControlEmitter {
     }
 
     void emitPatch(int st, int sc, String sn, int raw, int ch, long tick, MidiPatchMapper.HostPatch p) {
-        if (same(lastPrograms.get(ch), p.program)) return;
-        lastPrograms.put(ch, p.program);
         emit(
                 st,
                 sc,
@@ -93,7 +90,6 @@ final class MidiControlEmitter {
     void resetCaches() {
         lastControls.clear();
         lastBends.clear();
-        lastPrograms.clear();
     }
 
     private void emitDedup(int a, int b, String c, int raw, int ch, long t, int ctrl, int v, String map, boolean proxy) {

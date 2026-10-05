@@ -27,13 +27,13 @@ final class MidiLiveMixChaser {
                     if (byTick != 0) {
                         return byTick;
                     }
-                    int byChannel = Integer.compare(left.midiChannel, right.midiChannel);
-                    if (byChannel != 0) {
-                        return byChannel;
-                    }
                     int byOrder = Integer.compare(left.order, right.order);
                     if (byOrder != 0) {
                         return byOrder;
+                    }
+                    int byChannel = Integer.compare(left.midiChannel, right.midiChannel);
+                    if (byChannel != 0) {
+                        return byChannel;
                     }
                     return Integer.compare(left.data1, right.data1);
                 }
@@ -80,7 +80,6 @@ final class MidiLiveMixChaser {
                 new ArrayList<MidiPlan.MappedControlEvent>(mappedControls.size() + 64);
         rewritten.addAll(passthrough);
 
-        int nextOrder = 0;
         for (List<MidiPlan.MappedControlEvent> stream : groupedStreams.values()) {
             Integer previousValue = null;
             for (int i = 0; i < stream.size(); i++) {
@@ -95,15 +94,14 @@ final class MidiLiveMixChaser {
                         && isOrdinaryLiveMixProxyCandidate(control)
                         && chaseWindowTicks > 0L
                         && hasStrictlyActiveNote(notesByChannel.get(Integer.valueOf(control.midiChannel)), control.midiTick)) {
-                    nextOrder = appendMixChasedControls(
+                    appendMixChasedControls(
                             rewritten,
                             control,
                             previousValue.intValue(),
                             targetValue,
-                            chaseWindowTicks,
-                            nextOrder);
+                            chaseWindowTicks);
                 } else {
-                    rewritten.add(copyMappedControl(control, control.midiTick, targetValue, nextOrder++, control.sourceName));
+                    rewritten.add(copyMappedControl(control, control.midiTick, targetValue, control.sourceName));
                 }
                 previousValue = Integer.valueOf(targetValue);
             }
@@ -201,17 +199,16 @@ final class MidiLiveMixChaser {
         return current;
     }
 
-    private static int appendMixChasedControls(
+    private static void appendMixChasedControls(
             List<MidiPlan.MappedControlEvent> rewritten,
             MidiPlan.MappedControlEvent original,
             int previousValue,
             int targetValue,
-            long chaseWindowTicks,
-            int nextOrder) {
+            long chaseWindowTicks) {
         int delta = targetValue - previousValue;
         if (delta == 0) {
-            rewritten.add(copyMappedControl(original, original.midiTick, targetValue, nextOrder++, original.sourceName));
-            return nextOrder;
+            rewritten.add(copyMappedControl(original, original.midiTick, targetValue, original.sourceName));
+            return;
         }
 
         int eventCount = (int) Math.max(2L, Math.min((long) HOST_LIVE_MIX_CHASE_STEP_COUNT, chaseWindowTicks + 1L));
@@ -234,7 +231,7 @@ final class MidiLiveMixChaser {
             if (tick == lastTick && value == lastValue) {
                 continue;
             }
-            rewritten.add(copyMappedControl(original, tick, value, nextOrder++, syntheticName));
+            rewritten.add(copyMappedControl(original, tick, value, syntheticName));
             lastTick = tick;
             lastValue = value;
         }
@@ -244,21 +241,18 @@ final class MidiLiveMixChaser {
                     original,
                     original.midiTick + chaseWindowTicks,
                     targetValue,
-                    nextOrder++,
                     syntheticName));
         }
-        return nextOrder;
     }
 
     private static MidiPlan.MappedControlEvent copyMappedControl(
             MidiPlan.MappedControlEvent original,
             long midiTick,
             int data2,
-            int order,
             String sourceName) {
         return new MidiPlan.MappedControlEvent(
                 original, original.midiChannel, original.midiTrackIndex, midiTick,
-                clamp(0, 127, data2), sourceName, order);
+                clamp(0, 127, data2), sourceName, original.order);
     }
 
     private static int clamp(int min, int max, int value) {

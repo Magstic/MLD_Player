@@ -149,7 +149,7 @@ public final class InstrumentMappingAudit {
         command(events, 0, 0xE0, 5); // Repeated program.
         command(events, 1, 0xE1, 0); // Program 74.
         command(events, 1, 0xBA, 2);
-        command(events, 1, 0xE0, 1); // Unsupported mode: no patch or dedup cache update.
+        command(events, 1, 0xE0, 1); // Unsupported mode suppresses MIDI patch output.
         command(events, 1, 0xE1, 3);
         command(events, 1, 0xBA, 0);
         command(events, 1, 0xE0, 1); // Returning to mode 0 selects program 65.
@@ -158,10 +158,35 @@ public final class InstrumentMappingAudit {
         command(events, 0, 0xE0, 0x41); // Same program on another logical channel.
         command(events, 1, 0xE0, 1);
         command(events, 1, 0xBF, 0);
-        command(events, 1, 0xE0, 1); // Reset must re-emit even an unchanged program.
+        command(events, 1, 0xE0, 1); // Reset followed by the same program.
         note(events);
         command(events, 1, 0xDF, 0);
-        Sequence sequence = MldConverter.convert(mldBytes(events)).createMidiSequence();
+        verifyPatchEvents(events, Arrays.asList("0:0:64", "0:40:69", "0:80:69", "0:80:69",
+                "0:120:74", "0:320:65", "0:400:9", "0:440:9", "0:520:9", "0:520:9", "1:400:9"));
+
+        events = new ByteArrayOutputStream();
+        for (int i = 0; i < 3; i++) {
+            note(events);
+            command(events, 2, 0xDE, 0);
+        }
+        verifyPatchEvents(events, Arrays.asList("0:0:0", "0:80:0", "0:160:0"));
+
+        events = new ByteArrayOutputStream();
+        command(events, 0, 0xBA, 1);
+        command(events, 0, 0xE0, 5);
+        command(events, 0, 0xE1, 2);
+        note(events);
+        command(events, 2, 0xE1, 4);
+        note(events);
+        command(events, 2, 0xDF, 0);
+        verifyPatchEvents(events, Arrays.asList("9:0:0", "9:0:0", "9:0:0", "9:0:0", "9:80:0", "9:80:0"));
+    }
+
+    private static void verifyPatchEvents(ByteArrayOutputStream events, List<String> expected) throws Exception {
+        Sequence projected = MldConverter.convert(mldBytes(events)).createMidiSequence();
+        ByteArrayOutputStream midi = new ByteArrayOutputStream();
+        MidiSystem.write(projected, 1, midi);
+        Sequence sequence = MidiSystem.getSequence(new ByteArrayInputStream(midi.toByteArray()));
         List<String> actual = new ArrayList<String>();
         for (Track track : sequence.getTracks()) {
             for (int i = 0; i < track.size(); i++) {
@@ -173,10 +198,8 @@ public final class InstrumentMappingAudit {
                 }
             }
         }
-        List<String> expected = Arrays.asList("0:0:64", "0:40:69", "0:120:74",
-                "0:320:65", "0:400:9", "0:520:9", "1:400:9");
         if (!expected.equals(actual)) {
-            throw new AssertionError("Immediate patch updates/dedup/reset: expected " + expected + ", got " + actual);
+            throw new AssertionError("Projected Program Change events: expected " + expected + ", got " + actual);
         }
         notePrograms(sequence); // Also rejects Bank Select.
     }

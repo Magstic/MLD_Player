@@ -168,12 +168,12 @@ public final class SystemEventSemanticsAudit {
         List<TrackEvent> bankMode0 = new ArrayList<TrackEvent>();
         bankMode0.add(system(0, 0, 0, 0, 0xE0, 0x05));
         bankMode0.add(system(0, 1, 5, 5, 0xE1, 0x01));
-        bankMode0.add(note(0, 2, 6, 0)); // note path must not commit the bank-only cache change
+        bankMode0.add(note(0, 2, 6, 0)); // Sounding-note sync emits the current host patch.
         bankMode0.add(system(0, 3, 4, 10, 0xE0, 0x06));
         SemanticTestSupport bankTimeline = compile(bankMode0, 10);
-        eq("mode0 E1 host patch event count", 0,
+        eq("mode0 E1 host patch event count", 1,
                 countStatus(bankTimeline, 0xE1, ShortMessage.PROGRAM_CHANGE));
-        eq("mode0 note host patch event count", 0,
+        eq("mode0 note host patch event count", 1,
                 countStatus(bankTimeline, -1, ShortMessage.PROGRAM_CHANGE));
         eq("E0 host patch event count", 2,
                 countStatus(bankTimeline, 0xE0, ShortMessage.PROGRAM_CHANGE));

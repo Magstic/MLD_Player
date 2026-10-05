@@ -171,8 +171,8 @@ MIDI output:
 - mode `1` entry also recomputes the MIDI patch
 - patch mapping reads the event's immutable native channel snapshot directly;
   projection does not retain a duplicate native channel state
-- the MIDI control emitter deduplicates by final MIDI program per logical channel;
-  session reset clears this cache
+- every eligible patch request emits a Program Change, including repeated final
+  MIDI program values from `E0`, `E1`, mode `1` entry, and sounding-note patch sync
 
 Patch state records retain native mode, bank, program, kind, sub, and value.
 
@@ -297,6 +297,7 @@ MIDI channel.
   ticks at the current tempo
 - chase length is truncated by the next same-stream control boundary
 - up to `4` chased control steps are emitted
+- chased controls retain their source semantic action and collected emission order
 - the final chased value always lands on the original target value
 
 ## Output-Lane Remap

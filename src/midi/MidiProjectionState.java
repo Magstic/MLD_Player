@@ -75,7 +75,7 @@ final class MidiProjectionState {
             if (x.note != null) {
                 MelodyProgram.NoteAction n = x.note;
                 emitter.setSourceOrder(n.order);
-                emitPatchIfNeeded(n.channel, n.logicalChannel, n.sourceTrack, -1,
+                emitPatch(n.channel, n.logicalChannel, n.sourceTrack, -1,
                         "note_patch_sync", n.rawTick, timing.rawToMidiTick(n.rawTick));
             } else {
                 emitter.setSourceOrder(x.control.order);
@@ -164,7 +164,7 @@ final class MidiProjectionState {
     private void patch(MelodyProgram.NativeControl c, long t) {
         int l = prepare(c);
         if (l < 0 || (c.sourceCommand == 0xBA && c.channel.mode != 1)) return;
-        emitPatchIfNeeded(c.channel, l, c.sourceTrack, c.sourceCommand, c.sourceName, c.rawTick, t);
+        emitPatch(c.channel, l, c.sourceTrack, c.sourceCommand, c.sourceName, c.rawTick, t);
     }
 
     private void volume(MelodyProgram.NativeControl c, long t) {
@@ -207,7 +207,7 @@ final class MidiProjectionState {
         return l;
     }
 
-    private void emitPatchIfNeeded(MelodyProgram.ChannelSnapshot channel,
+    private void emitPatch(MelodyProgram.ChannelSnapshot channel,
             int l, int st, int sc, String sn, int raw, long t) {
         if (!isHostChannel(l) || channel == null) return;
         if (channel.mode != 0 && channel.mode != 1) return;
