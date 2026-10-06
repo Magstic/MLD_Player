@@ -39,13 +39,3 @@ External code imports `mld.api`.
 `mld.compile`, `mld.format`, `mld.decode`, `mld.semantic`, `midi`, and `audio` are implementation packages.
 
 `PublicApiAudit` checks public signatures during `ant jar`.
-
-## Release dependency
-
-Use an exact GitHub release tag and the `mld-player.jar` release asset:
-
-```text
-https://github.com/Magstic/MLD_Player/releases/download/<release>/mld-player.jar
-```
-
-Pin the release tag and SHA-256 in downstream builds. Cache the downloaded JAR in the downstream dependency directory.
